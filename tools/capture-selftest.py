@@ -46,8 +46,8 @@ def check_parse(ck) -> None:
     ck("空文本不命中", capture.parse("", p) == (False, ""))
     ck("None 不命中", capture.parse(None, p) == (False, ""))
     ck("空口令表不命中", capture.parse("记一下 x", []) == (False, ""))
-    ck("空白口令被忽略", capture.parse("记一下 x", ["", "  "]) == (False, ""))
-    ck("多口令取先命中的", capture.parse("记项目 收尾", ["记一下", "记项目"]) == (True, "收尾"))
+    ck("多口令都匹配时取先者", capture.parse("记一下 x", ["记", "记一下"]) == (True, "一下 x"))
+    ck("空白口令混在前面也能命中", capture.parse("记一下 x", ["", "  ", "记一下"]) == (True, "x"))
 
 
 def check_compose(ck) -> None:
@@ -55,11 +55,14 @@ def check_compose(ck) -> None:
     now = datetime(2026, 10, 3, 15, 42, 33)
     got = capture.compose("买牛奶", now)
     ck("有 frontmatter", got.startswith("---\n") and "\n---\n" in got)
-    ck("带 type/inbox", "\n  - type/inbox\n" in got)
+    tags = [ln for ln in got.splitlines() if ln.strip().startswith("- type/")]
+    ck("tags 段恰好一条 type/inbox", tags == ["  - type/inbox"], repr(tags))
     ck("created 是日期", "\ncreated: 2026-10-03\n" in got)
     ck("标题带时间", 'title: "口述捕获 2026-10-03 15:42"' in got)
     ck("正文在", "\n买牛奶\n" in got)
     ck("带来源行", "> 口述捕获 · 2026-10-03 15:42" in got)
+    ck("正文里的 CRLF 被归一成 LF",
+       "\r" not in capture.compose("第一行\r\n第二行", now))
 
 
 def check_write(ck, tmp) -> None:
@@ -68,15 +71,21 @@ def check_write(ck, tmp) -> None:
     p1 = capture.write(tmp, "第一条", when)
     ck("文件名带秒", os.path.basename(p1) == "2026-10-03-154233.md", os.path.basename(p1))
     ck("文件真的在", os.path.isfile(p1))
-    with open(p1, encoding="utf-8") as fh:
-        ck("内容可读回", "第一条" in fh.read())
     with open(p1, "rb") as fh:
-        ck("行尾是 LF", b"\r\n" not in fh.read())
+        data = fh.read()
+    ck("落盘与 compose() 逐字节相等",
+       data == capture.compose("第一条", when).encode("utf-8"))
+    ck("落盘里没有 CR", b"\r" not in data)
     p2 = capture.write(tmp, "第二条", when)
     ck("同秒不覆盖，退到 -2", os.path.basename(p2) == "2026-10-03-154233-2.md",
        os.path.basename(p2))
-    with open(p1, encoding="utf-8") as fh:
-        ck("第一条还在", "第一条" in fh.read())
+    with open(p1, "rb") as fh:
+        ck("第一条一字未变", fh.read() == data)
+    p3 = capture.write(tmp, "甲\r\n乙", when)
+    ck("第三次退到 -3", os.path.basename(p3) == "2026-10-03-154233-3.md",
+       os.path.basename(p3))
+    with open(p3, "rb") as fh:
+        ck("正文带 CRLF，落盘也不留 CR", b"\r" not in fh.read())
     deep = os.path.join(tmp, "深", "一层")
     ck("目录不存在会自动建", os.path.isfile(capture.write(deep, "x", when)))
     try:
@@ -86,12 +95,31 @@ def check_write(ck, tmp) -> None:
         ck("空目录要报错", True)
 
 
+def check_write_cleanup(ck, tmp) -> None:
+    """写坏了不留残件"""
+    where = os.path.join(tmp, "cleanup")
+    real = capture.compose
+    capture.compose = lambda body, now: "\ud800"      # 故意给个编不成 UTF-8 的
+    try:
+        capture.write(where, "x", datetime(2026, 10, 3, 15, 42, 33))
+        ck("编码失败要抛", False, "没有抛异常")
+    except UnicodeEncodeError:
+        ck("编码失败要抛", True)
+    except Exception as exc:                          # noqa: BLE001
+        ck("编码失败要抛", False, repr(exc))
+    finally:
+        capture.compose = real
+    ck("失败后目标目录是空的", os.path.isdir(where) and os.listdir(where) == [],
+       repr(os.listdir(where) if os.path.isdir(where) else None))
+
+
 def main() -> int:
     ck = Checker()
     tmp = tempfile.mkdtemp(prefix="vp-capture-")
     try:
         print("=== 口述落库自测 ===")
-        for fn, args in ((check_parse, ()), (check_compose, ()), (check_write, (tmp,))):
+        for fn, args in ((check_parse, ()), (check_compose, ()),
+                         (check_write, (tmp,)), (check_write_cleanup, (tmp,))):
             print("\n[%s]" % fn.__doc__.strip().splitlines()[0])
             fn(ck, *args)
     finally:

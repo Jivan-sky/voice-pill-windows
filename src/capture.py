@@ -28,15 +28,9 @@ _MAX_SEQ = 100
 def _strip_leading(text: str) -> str:
     """去掉首尾空白，以及开头粘着的一串标点。
 
-    一次 `lstrip` 就够：标点集合里已经含空白，剥完不会又露出新的标点。
+    一次 `lstrip` 就够：标点集合里已经含空白，剥完首字符必不在集合内。
     """
-    body = (text or "").strip()
-    while body:
-        trimmed = body.lstrip(_LEADING)
-        if trimmed == body:
-            break
-        body = trimmed
-    return body
+    return (text or "").strip().lstrip(_LEADING)
 
 
 def parse(text: str, prefixes: Sequence[str]) -> Tuple[bool, str]:
@@ -56,8 +50,14 @@ def parse(text: str, prefixes: Sequence[str]) -> Tuple[bool, str]:
 
 
 def compose(body: str, now: datetime) -> str:
-    """拼出一篇捕获笔记的完整内容：frontmatter + 正文 + 来源行。"""
+    """拼出一篇捕获笔记的完整内容：frontmatter + 正文 + 来源行。
+
+    正文里的换行统一成 LF：ASR 或剪贴板给的换行不一定是 `\n`，而落盘必须
+    保持纯 LF —— `write` 的 `newline="\n"` 只拦得住 Python 自己那层转换，
+    拦不住正文里自带的 `\r`。
+    """
     stamp = now.strftime("%Y-%m-%d %H:%M")
+    text = (body or "").replace("\r\n", "\n").replace("\r", "\n").strip()
     return (
         '---\n'
         'title: "口述捕获 %s"\n'
@@ -69,7 +69,7 @@ def compose(body: str, now: datetime) -> str:
         '%s\n'
         '\n'
         '> 口述捕获 · %s\n'
-    ) % (stamp, now.strftime("%Y-%m-%d"), (body or "").strip(), stamp)
+    ) % (stamp, now.strftime("%Y-%m-%d"), text, stamp)
 
 
 def write(inbox_dir: str, body: str, now: Optional[datetime] = None) -> str:
