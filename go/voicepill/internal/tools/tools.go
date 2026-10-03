@@ -5,6 +5,7 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -101,18 +103,105 @@ func Serve(caller Caller) error {
 
 func register(server *mcp.Server, caller Caller) {
 	h := &handler{caller: caller}
-	mcp.AddTool(server, &mcp.Tool{Name: "voice_pill_status", Description: descStatus}, h.status)
-	mcp.AddTool(server, &mcp.Tool{Name: "voice_pill_listen", Description: descListen}, h.listen)
-	mcp.AddTool(server, &mcp.Tool{Name: "voice_pill_stop", Description: descStop}, h.stop)
-	mcp.AddTool(server, &mcp.Tool{Name: "voice_pill_cancel", Description: descCancel}, h.cancel)
-	mcp.AddTool(server, &mcp.Tool{Name: "voice_pill_take", Description: descTake}, h.take)
-	mcp.AddTool(server, &mcp.Tool{Name: "voice_pill_speak", Description: descSpeak}, h.speak)
-	mcp.AddTool(server, &mcp.Tool{Name: "voice_pill_shutup", Description: descShutup}, h.shutup)
-	mcp.AddTool(server, &mcp.Tool{Name: "voice_pill_prompt_hook", Description: descPromptHook}, h.promptHook)
+	mcp.AddTool(server, &mcp.Tool{Name: "voice_pill_status", Description: descStatus,
+		InputSchema: noArgsSchema("voice_pill_status")}, h.status)
+	mcp.AddTool(server, &mcp.Tool{Name: "voice_pill_listen", Description: descListen,
+		InputSchema: listenSchema()}, h.listen)
+	mcp.AddTool(server, &mcp.Tool{Name: "voice_pill_stop", Description: descStop,
+		InputSchema: noArgsSchema("voice_pill_stop")}, h.stop)
+	mcp.AddTool(server, &mcp.Tool{Name: "voice_pill_cancel", Description: descCancel,
+		InputSchema: noArgsSchema("voice_pill_cancel")}, h.cancel)
+	mcp.AddTool(server, &mcp.Tool{Name: "voice_pill_take", Description: descTake,
+		InputSchema: noArgsSchema("voice_pill_take")}, h.take)
+	mcp.AddTool(server, &mcp.Tool{Name: "voice_pill_speak", Description: descSpeak,
+		InputSchema: speakSchema()}, h.speak)
+	mcp.AddTool(server, &mcp.Tool{Name: "voice_pill_shutup", Description: descShutup,
+		InputSchema: noArgsSchema("voice_pill_shutup")}, h.shutup)
+	mcp.AddTool(server, &mcp.Tool{Name: "voice_pill_prompt_hook", Description: descPromptHook,
+		InputSchema: promptHookSchema()}, h.promptHook)
+}
+
+// mustSchema 用反射推断入参结构，再补上 Python 版 schema 里有的 title/default。
+// 结构体标签只能写 description（带 "WORD=" 前缀会被 jsonschema-go 拒绝），
+// 所以 title / default 只能这样显式补。
+func mustSchema[T any](title string, tune func(*jsonschema.Schema)) *jsonschema.Schema {
+	schema, err := jsonschema.For[T](nil)
+	if err != nil {
+		panic(fmt.Sprintf("推断 %s 的入参 schema 失败：%v", title, err))
+	}
+	schema.Title = title
+	if tune != nil {
+		tune(schema)
+	}
+	return schema
+}
+
+func noArgsSchema(name string) *jsonschema.Schema {
+	return mustSchema[noArgs](name+"Arguments", nil)
+}
+
+func listenSchema() *jsonschema.Schema {
+	return mustSchema[listenArgs]("voice_pill_listenArguments", func(s *jsonschema.Schema) {
+		if prop := s.Properties["seconds"]; prop != nil {
+			prop.Title = "Seconds"
+			prop.Default = json.RawMessage("10.0")
+		}
+	})
+}
+
+func speakSchema() *jsonschema.Schema {
+	return mustSchema[speakArgs]("voice_pill_speakArguments", func(s *jsonschema.Schema) {
+		if prop := s.Properties["text"]; prop != nil {
+			prop.Title = "Text"
+		}
+	})
+}
+
+func promptHookSchema() *jsonschema.Schema {
+	return mustSchema[promptHookArgs]("voice_pill_prompt_hookArguments", func(s *jsonschema.Schema) {
+		titles := map[string]string{
+			"hook_event_name": "Hook Event Name",
+			"session_id":      "Session Id",
+			"turn_id":         "Turn Id",
+			"cwd":             "Cwd",
+			"prompt":          "Prompt",
+		}
+		for field, title := range titles {
+			prop := s.Properties[field]
+			if prop == nil {
+				continue
+			}
+			prop.Title = title
+			prop.Default = json.RawMessage(`""`)
+		}
+	})
 }
 
 type handler struct {
 	caller Caller
+}
+
+// result 把一个工具输出包成「一个 TextContent（紧凑 JSON）+ 同名结构化对象」。
+// 手写 encoder 关掉 HTML 转义，和 Python 版 json.dumps 的文本更接近。
+func result(out map[string]any) (*mcp.CallToolResult, any, error) {
+	encoded, err := encodeJSON(out)
+	if err != nil {
+		return nil, nil, fmt.Errorf("序列化工具结果失败：%v", err)
+	}
+	return &mcp.CallToolResult{
+		Content:           []mcp.Content{&mcp.TextContent{Text: string(encoded)}},
+		StructuredContent: json.RawMessage(encoded),
+	}, nil, nil
+}
+
+func encodeJSON(value any) ([]byte, error) {
+	var buf bytes.Buffer
+	encoder := json.NewEncoder(&buf)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(value); err != nil {
+		return nil, err
+	}
+	return bytes.TrimSuffix(buf.Bytes(), []byte("\n")), nil
 }
 
 func (h *handler) callMap(cmd string, args map[string]any) (map[string]any, error) {
@@ -133,13 +222,13 @@ func (h *handler) callMap(cmd string, args map[string]any) (map[string]any, erro
 func (h *handler) status(_ context.Context, _ *mcp.CallToolRequest, _ noArgs) (*mcp.CallToolResult, any, error) {
 	state, err := h.callMap("status", nil)
 	if err != nil {
-		return nil, map[string]any{"running": false, "note": noteNotRunning}, nil
+		return result(map[string]any{"running": false, "note": noteNotRunning})
 	}
 	out := map[string]any{"running": true}
 	for k, v := range state {
 		out[k] = v
 	}
-	return nil, out, nil
+	return result(out)
 }
 
 func (h *handler) listen(_ context.Context, _ *mcp.CallToolRequest, in listenArgs) (*mcp.CallToolResult, any, error) {
@@ -194,7 +283,7 @@ func (h *handler) cancel(_ context.Context, _ *mcp.CallToolRequest, _ noArgs) (*
 	if err != nil {
 		return nil, nil, err
 	}
-	return nil, state, nil
+	return result(state)
 }
 
 func (h *handler) take(_ context.Context, _ *mcp.CallToolRequest, _ noArgs) (*mcp.CallToolResult, any, error) {
@@ -202,7 +291,7 @@ func (h *handler) take(_ context.Context, _ *mcp.CallToolRequest, _ noArgs) (*mc
 	if err != nil {
 		return nil, nil, err
 	}
-	return nil, data, nil
+	return result(data)
 }
 
 func (h *handler) speak(_ context.Context, _ *mcp.CallToolRequest, in speakArgs) (*mcp.CallToolResult, any, error) {
@@ -213,7 +302,7 @@ func (h *handler) speak(_ context.Context, _ *mcp.CallToolRequest, in speakArgs)
 	if err != nil {
 		return nil, nil, err
 	}
-	return nil, data, nil
+	return result(data)
 }
 
 func (h *handler) shutup(_ context.Context, _ *mcp.CallToolRequest, _ noArgs) (*mcp.CallToolResult, any, error) {
@@ -221,14 +310,14 @@ func (h *handler) shutup(_ context.Context, _ *mcp.CallToolRequest, _ noArgs) (*
 	if err != nil {
 		return nil, nil, err
 	}
-	return nil, data, nil
+	return result(data)
 }
 
 func (h *handler) promptHook(_ context.Context, _ *mcp.CallToolRequest, _ promptHookArgs) (*mcp.CallToolResult, any, error) {
 	taken, err := h.callMap("take", nil)
 	if err != nil {
 		// 钩子绝不能因为引擎没开就拦住用户的这一轮对话。
-		return nil, map[string]any{"continue": true}, nil
+		return result(map[string]any{"continue": true})
 	}
 	texts := stringSlice(taken["texts"])
 	kept := make([]string, 0, len(texts))
@@ -238,14 +327,14 @@ func (h *handler) promptHook(_ context.Context, _ *mcp.CallToolRequest, _ prompt
 		}
 	}
 	if len(kept) == 0 {
-		return nil, map[string]any{"continue": true}, nil
+		return result(map[string]any{"continue": true})
 	}
-	return nil, map[string]any{
+	return result(map[string]any{
 		"hookSpecificOutput": map[string]any{
 			"hookEventName":     "UserPromptSubmit",
 			"additionalContext": promptPrefix + strings.Join(kept, "\n"),
 		},
-	}, nil
+	})
 }
 
 // waitForResult 等这次录音走完（不再处于 recording/transcribing），然后把文字取走。
@@ -276,12 +365,12 @@ func (h *handler) waitForResult() (*mcp.CallToolResult, any, error) {
 	if state != nil {
 		phase = state["phase"]
 	}
-	return nil, map[string]any{
+	return result(map[string]any{
 		"text":      text,
 		"texts":     texts,
 		"timed_out": state != nil && phaseOf(state) != "idle",
 		"phase":     phase,
-	}, nil
+	})
 }
 
 func phaseOf(state map[string]any) string {
