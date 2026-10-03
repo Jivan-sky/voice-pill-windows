@@ -25,6 +25,7 @@ gold 由 Python 版生成（用有 mcp 的那个 venv），生成命令见
 
 用法（任意 cwd 都行）：
     .venv\\Scripts\\python.exe tools\\pluginexe-selftest.py
+    .venv\\Scripts\\python.exe tools\\pluginexe-selftest.py --timing   # 冷启动对比：只报数（不参与失败判定）
 失败返回非零——可以当门禁用。
 """
 from __future__ import annotations
@@ -514,7 +515,100 @@ def run_hook(env: dict, kind: str, payload_text: str, timeout: float = 30.0):
     return proc.returncode, out, err
 
 
+# ---------- 冷启动计时（--timing）----------
+
+# 量的是同一件事在两种实现下的答案：从 spawn 到 initialize 回包。
+# Python 参照是插件 venv 里那份旧实现（任务 18 删掉之后这条自动跳过）。
+# --timing 只报数，不参与失败判定——尺子不拦人。
+
+TIMING_RUNS = 5
+TIMING_SETTLE_SECONDS = 0.35
+
+
+def python_reference() -> list:
+    """旧 Python 实现（插件 venv + plugins/voice-pill/mcp_server.py）。
+
+    路径全部从环境推出来，仓库里不存机器路径；插件 venv 或源码不在就返回空。
+    """
+    la = os.environ.get("LOCALAPPDATA") or ""
+    venv_py = os.path.join(la, "VoicePill", "plugin-venv", "Scripts", "python.exe")
+    server = os.path.join(REPO_ROOT, "plugins", "voice-pill", "mcp_server.py")
+    if os.path.isfile(venv_py) and os.path.isfile(server):
+        return [venv_py, server]
+    return []
+
+
+def _timing_env(sandbox: str) -> dict:
+    env = dict(os.environ)
+    env["LOCALAPPDATA"] = sandbox
+    # 引擎根指到不存在的目录：initialize 不该去碰正在跑的真身，也拉不起新的。
+    env["VOICEPILL_ENGINE_ROOT"] = os.path.join(sandbox, "no-such-root")
+    env["PYTHONIOENCODING"] = "utf-8"
+    return env
+
+
+def time_initialize_once(cmd: list, env: dict) -> float:
+    """一次冷启动：spawn → 写 initialize → 读到回包，返回毫秒。"""
+    request = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+               "params": {"protocolVersion": PROTOCOL_VERSION,
+                          "capabilities": {},
+                          "clientInfo": {"name": "vp-timing", "version": "1"}}}
+    data = (json.dumps(request, ensure_ascii=False,
+                       separators=(",", ":")) + "\n").encode("utf-8")
+    t0 = time.perf_counter()
+    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL, env=env)
+    try:
+        proc.stdin.write(data)
+        proc.stdin.flush()
+        line = proc.stdout.readline()
+        elapsed = (time.perf_counter() - t0) * 1000.0
+        if not line:
+            raise RuntimeError("没等到 initialize 回包：%s" % cmd[0])
+        json.loads(line.decode("utf-8", "replace"))
+    finally:
+        # 写完请求要留一会儿再 EOF，否则回复会丢（同一个坑见 MCPClient.close）。
+        time.sleep(TIMING_SETTLE_SECONDS)
+        try:
+            proc.stdin.close()
+        except OSError:
+            pass
+        try:
+            proc.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+    return elapsed
+
+
+def run_timing() -> int:
+    if not os.path.isfile(EXE):
+        print("❌ 找不到 %s。先跑 tools/build-plugin-exe.ps1。" % EXE)
+        return 1
+    sandbox = tempfile.mkdtemp(prefix="vp-timing-")
+    env = _timing_env(sandbox)
+    print("=== 冷启动对比：spawn → initialize 回包（各 %d 次，取中位数）==="
+          % TIMING_RUNS)
+    print("Go  ：%s" % EXE)
+    branches = [("Go    ", [EXE])]
+    ref = python_reference()
+    if ref:
+        branches.append(("Python", ref))
+        print("Py  ：%s" % ref[1])
+    else:
+        print("Py  ：跳过（插件 venv 或 mcp_server.py 不在——任务 18 删掉后属正常）")
+    for label, cmd in branches:
+        samples = [time_initialize_once(cmd, env) for _ in range(TIMING_RUNS)]
+        ordered = sorted(samples)
+        print("%s：中位数 %7.0f ms   样本 %s"
+              % (label, ordered[len(ordered) // 2],
+                 " ".join("%.0f" % v for v in samples)))
+    return 0
+
+
 def main() -> int:
+    if "--timing" in sys.argv[1:]:
+        return run_timing()
     if not os.path.isfile(EXE):
         print("❌ 找不到 %s。先跑 tools\\build-plugin-exe.ps1。" % EXE)
         return 1
