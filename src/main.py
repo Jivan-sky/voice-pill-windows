@@ -53,14 +53,17 @@ import console
 
 console.make_output_safe()      # 必须在任何 print 之前；失败原因见 console.py
 
+import anchor
 import autostart
 import audio as audio_mod
 import bridge
 import config
+import delivery
 import hotkey
 import paste as paste_mod
 import providers
 import single_instance
+import speak as speak_mod
 from hotkey import HotkeyManager
 from hud import HudWindow
 from live_session import LiveTranscriptionSession
@@ -87,6 +90,12 @@ MAINTENANCE_SECONDS = 6 * 3600.0  # 清一次过期留存
 # 控制面 `take` 一次能取走的转写条数上限。取走语义 + 有界队列：用户说过的
 # 话不会在内存里无限堆着，插件那侧也不会一次收到一大串。
 PENDING_TRANSCRIPTS = 20
+
+# 交付阶段的停滞上限（秒）。**照搬原版 0.2.4**（Sources/DeliverySession.swift
+# 里的 timeout: .seconds(8)）：粘贴这条路一旦卡住，状态就永远回不到 IDLE，
+# 而 Fn 只在 IDLE 受理——热键被自己锁死，且没有任何报错。上游 0.2.3 的
+# 实际故障正是这个（见上游 docs/VERIFY-0.2.4.md）。
+DELIVERY_TIMEOUT_SECONDS = 8.0
 
 
 class RecordWatchdog:
@@ -148,6 +157,11 @@ class VoicePill:
         self._log_path = ""
         self._transcript = ""
         self._last_error = ""
+        # 交付护栏：代际令牌 + 停滞看门狗。见 delivery.py 与
+        # DELIVERY_TIMEOUT_SECONDS 的注释。
+        self._delivery = delivery.DeliverySession(
+            DELIVERY_TIMEOUT_SECONDS, self._on_delivery_stalled)
+        self._delivery_gen = 0
         # 最近几次成功的转写，供控制面 `take` 取走（Codex 插件那侧用）。
         # 每项是 (转写时间戳, 文字)：队列是被动的——它只在用户下一次往 Codex
         # 发消息时才被取走，所以得靠时间戳滤掉过了保鲜期的旧话（见
@@ -181,6 +195,12 @@ class VoicePill:
             on_quick_tap=lambda: None,
         )
 
+        # 发声（离线 TTS）。懒加载：模型 325 MB，第一次真要说话时才读盘。
+        # 传 lambda 而不是 settings 本身——热重载会把 self.settings 换掉。
+        self._speaker = speak_mod.Speaker(
+            lambda: self.settings,
+            log=lambda msg: print("[发声] %s" % msg, file=sys.stderr))
+
         # 控制面：外部进程（Codex 插件）靠它问状态、驱动录音、取走文字。
         # 见 bridge.py 顶部注释。
         self._bridge = bridge.BridgeServer(self._bridge_command)
@@ -191,7 +211,11 @@ class VoicePill:
         with self._lock:
             if self.phase is not Phase.IDLE:
                 return
-            self.phase = Phase.RECORDING
+            self._set_phase(Phase.RECORDING)
+
+        # 打断（barge-in）：你一按 Fn，它立刻闭嘴。不然想插话就得等它念完——
+        # 那是广播，不是对话。
+        self._speaker.stop()
 
         self._last_error = ""
         self._transcript = ""
@@ -271,22 +295,28 @@ class VoicePill:
         with self._lock:
             if self.phase is not Phase.RECORDING:
                 return
-            self.phase = Phase.TRANSCRIBING
+            self._set_phase(Phase.TRANSCRIBING)
 
-        self.capture.finish()          # 收尾 WAV（先落盘，供失败重试）
+        # 这一段一旦抛异常，状态就永远停在 TRANSCRIBING，而 on_start 只受理
+        # IDLE——按 Fn 从此没反应，还没有任何报错。原版 0.2.3 栽的就是这个
+        # （见 delivery.py 顶部）。所以整段兜底：留声、解锁、把原始异常记账。
+        try:
+            self.capture.finish()      # 收尾 WAV（先落盘，供失败重试）
 
-        # 采音体检。**必须在 session.finish() 之前**：空音频灌进去，引擎会
-        # 如实回一句"收到 0 字节"，用户看到的是引擎的回显，以为是后端坏了——
-        # 实际是麦克风一帧没出（设备被别的进程占着）。实测踩过一次：上一轮的
-        # 僵尸进程握着麦克风，新流能开起来但收不到帧，链路看着全绿，结果为空。
-        got = self.capture.seconds_captured
-        if got < MIN_CAPTURE_SECONDS:
-            self._abort_capture(got)
-            return
+            # 采音体检。**必须在 session.finish() 之前**：空音频灌进去，引擎会
+            # 如实回一句"收到 0 字节"，用户看到的是引擎的回显，以为是后端坏了——
+            # 实际是麦克风一帧没出（设备被别的进程占着）。实测踩过一次：上一轮的
+            # 僵尸进程握着麦克风，新流能开起来但收不到帧，链路看着全绿，结果为空。
+            got = self.capture.seconds_captured
+            if got < MIN_CAPTURE_SECONDS:
+                self._abort_capture(got)
+                return
 
-        if self.settings.hud_enabled:
-            self.hud.set_phase("transcribing")
-        self.session.finish()          # 关 stdin，让引擎收尾出结果
+            if self.settings.hud_enabled:
+                self.hud.set_phase("transcribing")
+            self.session.finish()      # 关 stdin，让引擎收尾出结果
+        except Exception as exc:       # noqa: BLE001 —— 兜底就是要宽
+            self._delivery_crashed("转写收尾失败", exc)
 
     def _abort_capture(self, got: float) -> None:
         """录音无效：不送后端，直接收摊。"""
@@ -319,7 +349,21 @@ class VoicePill:
         self._reset()
 
     def on_complete(self, text, error) -> None:
-        """会话结束。text 与 error 恰有一个非空。"""
+        """会话结束。text 与 error 恰有一个非空。
+
+        跑在 live_session 起的回调线程上。**这个方法无论如何都必须让状态
+        回到 IDLE**：准入闸门在 on_start，而那里只认 IDLE——留一次不回来，
+        按 Fn 就永久没反应，且没有任何报错。原版 0.2.3 的实际故障就是这个
+        （见 delivery.py 顶部与上游 docs/VERIFY-0.2.4.md）。
+        """
+        with self._delivery.run() as gen:
+            self._delivery_gen = gen
+            try:
+                self._deliver(text, error, gen)
+            except Exception as exc:   # noqa: BLE001 —— 兜底就是要宽
+                self._delivery_crashed("交付失败", exc)
+
+    def _deliver(self, text, error, gen: int) -> None:
         if error:
             self._last_error = error
             if self.settings.hud_enabled:
@@ -328,33 +372,44 @@ class VoicePill:
             # 原版语义：失败时保留录音，供 Retry。这里不删 WAV。
             print("[失败] %s\n       录音留存：%s" % (error, self._wav_path),
                   file=sys.stderr)
-            self._reset()
-            if self.once:
-                self._shutdown()
+            self._finish_delivery(gen)
             return
 
-        self._transcript = text or ""
-        if self._transcript:
+        text = text or ""
+        if text:
+            # 先入待取队列：这是用户真说过的话。哪怕这次交付后来被判成迟到，
+            # 也宁可让它在队列里等一次取用，而不是悄悄丢掉。
             with self._lock:
-                self._pending.append((time.time(), self._transcript))
-        if self.settings.auto_paste and self._transcript:
+                self._pending.append((time.time(), text))
+        if self.settings.auto_paste and text:
             try:
-                paste_mod.paste(self._transcript, self._target_hwnd)
+                paste_mod.paste(text, self._target_hwnd)
             except paste_mod.PasteError as exc:
                 # 粘贴失败**不还原剪贴板**——文字还在，用户可手动 Ctrl+V
                 print("[粘贴失败] %s\n       文字已在剪贴板：%s"
-                      % (exc, self._transcript), file=sys.stderr)
+                      % (exc, text), file=sys.stderr)
+            except Exception as exc:   # noqa: BLE001
+                # 上游 0.2.3 的坑正在这里：只捕自家异常，别的一律穿透出去，
+                # 状态留在"忙"上，Fn 被自己锁死，还不报错。文字既然已经进
+                # 了剪贴板，就按"粘贴失败"处理，但把原始异常完整记进日志。
+                traceback.print_exc()
+                print("[粘贴失败] 非预期异常 %r\n       文字已在剪贴板：%s"
+                      % (exc, text), file=sys.stderr)
         else:
-            print(self._transcript)
+            print(text)
 
+        # 看门狗可能已经把这次交付作废，而用户也许已经在录下一句了：此时
+        # 这些破坏性收尾（删 WAV、复位状态）会打到新会话头上。先自查代际。
+        if not self._delivery.is_current(gen):
+            print("[迟到] 交付停滞期间已换代，本次收尾跳过"
+                  "（文字仍会留在剪贴板与待取队列）。", file=sys.stderr)
+            return
+
+        self._transcript = text
         # 转写成功 → 删掉录音（原版同）
         self._remove_wav()
         self._remove_log()
-        if self.settings.hud_enabled:
-            self.hud.hide()
-        self._reset()
-        if self.once:
-            self._shutdown()
+        self._finish_delivery(gen)
 
     # ---------- 杂项 ----------
 
@@ -370,6 +425,19 @@ class VoicePill:
         if cmd == "take":
             texts = self._drain_pending()
             return {"texts": texts, "count": len(texts)}
+        if cmd == "speak":
+            # auto=True 是"每轮回复自动念"那条路（Stop 钩子），它受
+            # settings.speak_replies 管；auto=False 是明确要求念（插件
+            # 的 speak 工具），不受开关限制。判断只在这一处做，别让
+            # 钩子和常驻进程各判一遍——两份规则必然走散。
+            if args.get("auto") and not self.settings.speak_replies:
+                return {"spoken": "", "chars": 0,
+                        "skipped": "speak_replies=false"}
+            text = self._speaker.speak(str(args.get("text") or ""))
+            return {"spoken": text, "chars": len(text)}
+        if cmd == "shutup":
+            self._speaker.stop()
+            return {"speaking": False}
         if cmd == "start":
             self.on_start()
         elif cmd == "stop":
@@ -419,6 +487,8 @@ class VoicePill:
             "hotkey_alive": bool(self.hotkeys.alive),
             "hud": self.settings.hud_enabled,
             "pending": self._pending_count(),
+            "speaking": self._speaker.speaking,
+            "tts_loaded": self._speaker.model_loaded,
             "uptime_seconds": round(time.time() - self._started_at, 1),
         }
 
@@ -443,9 +513,62 @@ class VoicePill:
             except OSError:
                 pass
 
+    def _set_phase(self, phase: Phase) -> None:
+        """切状态并留一行诊断日志。**调用方必须已持 self._lock。**
+
+        加日志是因为这类故障全都"没有可见症状"：状态一旦卡住，热键就是
+        静默失效。日志只记状态与代际，**不记说话内容**。
+        """
+        if self.phase is phase:
+            return
+        was, self.phase = self.phase, phase
+        print("[状态] %s → %s（代 %d）"
+              % (was.value, phase.value, self._delivery_gen), file=sys.stderr)
+
+    def _finish_delivery(self, gen: int) -> None:
+        """交付的统一收尾：关 HUD、回 IDLE、必要时退出。"""
+        if self.settings.hud_enabled:
+            self.hud.hide()
+        self._reset()
+        if self.once:
+            self._shutdown()
+
+    def _delivery_crashed(self, what: str, exc: Exception) -> None:
+        """交付路径上的兜底：记原始异常，并把状态收回 IDLE。
+
+        以前这里没有兜底——`on_complete` 里只要抛出一个不是 PasteError 的
+        异常，后面的 `_reset()` 就轮不到执行，phase 永远停在 TRANSCRIBING，
+        按 Fn 再也没反应，而且控制台上什么都看不到。
+        """
+        traceback.print_exc()
+        self._last_error = "%s：%r" % (what, exc)
+        print("[交付异常] %s：%r —— 已强制回到待命。" % (what, exc),
+              file=sys.stderr)
+        if self.settings.hud_enabled:
+            self.hud.set_text("%s，文字在剪贴板" % what)
+            threading.Timer(2.5, self.hud.hide).start()
+        self._reset()
+
+    def _on_delivery_stalled(self) -> None:
+        """交付停滞到点。**跑在看门狗线程上。**
+
+        只把状态收回 IDLE，不去碰那次仍在阻塞的粘贴——它迟早会返回，靠
+        代际令牌自查后放弃收尾（见 _deliver 末尾）。这正是原版 0.2.4
+        `DeliverySession` 的 on_interrupt：把"卡住"变成一次可恢复的失败。
+        """
+        limit = DELIVERY_TIMEOUT_SECONDS
+        self._last_error = "交付停滞超过 %.0f 秒" % limit
+        print("[护栏] 交付超过 %.0f 秒没有结束，强制回到待命"
+              "（粘贴可能仍会落地，文字也在剪贴板里）。" % limit,
+              file=sys.stderr)
+        if self.settings.hud_enabled:
+            self.hud.set_text("粘贴卡住了，已强制解锁")
+            threading.Timer(2.5, self.hud.hide).start()
+        self._reset()
+
     def _reset(self) -> None:
         with self._lock:
-            self.phase = Phase.IDLE
+            self._set_phase(Phase.IDLE)
         self._watchdog.disarm()
         self.hotkeys.reset()
 
@@ -466,7 +589,7 @@ class VoicePill:
                                  if self.settings.max_record_seconds > 0
                                  else "不限"))
         print("  Ctrl+C 退出；驻留形态用 `main.py --stop`")
-        print("  控制面  ：%s" % bridge.PIPE_NAME)
+        print("  控制面  ：%s" % bridge.pipe_name())
 
         self._settings_mtime = _mtime(config.Settings.path())
         self._run_maintenance()          # 开机先清一次过期留存
@@ -515,6 +638,8 @@ class VoicePill:
         if now >= self._next_maintenance:
             self._next_maintenance = now + MAINTENANCE_SECONDS
             self._run_maintenance()
+        # 静置够久就把 TTS 模型放掉：它占着几百 MB，而常驻进程要活很久。
+        self._speaker.maybe_unload()
 
     def _check_hook(self) -> None:
         """钩子死了就重装。驻留形态下"按 Fn 没反应"是最难自查的故障。"""
@@ -722,6 +847,7 @@ def run_check(settings: config.Settings) -> int:
     if not watching:
         guard.release()
     print("  看门狗    ：%s" % ("✅ 在守着" if watching else "无（没人替你重拉）"))
+    print("  锚点      ：%s" % anchor.status_line())
     print("  控制面    ：%s" % bridge.status_line())
     print("  开机自启  ：%s" % autostart.status())
     log = config.app_log_path()

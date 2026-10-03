@@ -1,5 +1,16 @@
 {
   "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:\\Users\\sjw\\plugins\\voice-pill\\hook-session-start.cmd",
+            "timeout": 20
+          }
+        ]
+      }
+    ],
     "UserPromptSubmit": [
       {
         "hooks": [
@@ -7,6 +18,17 @@
             "type": "command",
             "command": "C:\\Users\\sjw\\plugins\\voice-pill\\hook.cmd",
             "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:\\Users\\sjw\\plugins\\voice-pill\\hook-stop.cmd",
+            "timeout": 5
           }
         ]
       }

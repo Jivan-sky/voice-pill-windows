@@ -189,6 +189,32 @@ def voice_pill_take() -> dict:
 
 
 @mcp.tool()
+def voice_pill_speak(text: str) -> dict:
+    """把这段文字用**本机离线 TTS** 念出来（不联网、不需要账号）。
+
+    什么时候用：用户希望你「说出来」而不是只打字——比如他正在做别的事、
+    或者明确说「念给我听」。念之前会把 markdown 记号去掉、按句切开，
+    所以传原文就行，不用自己清理。
+
+    注意：这**不是**每轮自动念。默认不自动；要每轮回复都念，由用户在
+    `settings.json` 里打开 `speak_replies`。用户说「别念了」时用
+    `voice_pill_shutup`。
+    """
+    if not str(text or "").strip():
+        raise RuntimeError("要念的文本是空的。")
+    return _call("speak", timeout=10.0, text=text, auto=False)
+
+
+@mcp.tool()
+def voice_pill_shutup() -> dict:
+    """立刻让它闭嘴（打断正在念的话）。
+
+    用户按 Fn 也会自动打断——这是"对话"而不是"广播"的关键。
+    """
+    return _call("shutup", timeout=8.0)
+
+
+@mcp.tool()
 def voice_pill_prompt_hook(hook_event_name: str = "", session_id: str = "",
                            turn_id: str = "", cwd: str = "",
                            prompt: str = "") -> dict:

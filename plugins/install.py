@@ -176,13 +176,31 @@ def render_files(check: bool) -> bool:
             }
         }
     }
+    # 三个钩子：
+    #   SessionStart     —— Codex 一开就把驻留实例拉起来，并把它的命绑在
+    #                       Codex 上（见 hook_session_start.py / src/anchor.py）
+    #   UserPromptSubmit —— 你说的字**进**对话（说话 → 上下文）
+    #   Stop             —— 助手的回复**出**声（回复 → 本机 TTS）
+    # 都必须写绝对路径：Codex 从别的工作目录拉起钩子，相对路径解析不到。
+    # SessionStart 超时给得宽：冷启动时要等引擎把控制面架起来（最多 3 秒），
+    # 已经在跑时毫秒级返回。
     hooks_json = {
         "hooks": {
+            "SessionStart": [
+                {"hooks": [{"type": "command",
+                            "command": str(LINK_PATH / "hook-session-start.cmd"),
+                            "timeout": 20}]}
+            ],
             "UserPromptSubmit": [
                 {"hooks": [{"type": "command",
                             "command": str(LINK_PATH / "hook.cmd"),
                             "timeout": 10}]}
-            ]
+            ],
+            "Stop": [
+                {"hooks": [{"type": "command",
+                            "command": str(LINK_PATH / "hook-stop.cmd"),
+                            "timeout": 5}]}
+            ],
         }
     }
     ok = True

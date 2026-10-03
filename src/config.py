@@ -149,6 +149,26 @@ def local_model_dir() -> str:
     return os.path.join(models_dir(), LOCAL_MODEL_NAME)
 
 
+TTS_MODEL_NAME = "kokoro-multi-lang-v1_1"
+
+
+def tts_model_dir() -> str:
+    """离线 TTS（发声）模型的目录。
+
+    优先 settings.json 的 `tts_model_dir`，其次环境变量
+    `VOICEPILL_TTS_MODEL`，再次**和 ASR 模型并排**——这样不用写死任何
+    盘符：ASR 模型挪到哪，TTS 模型就跟到哪（本机的实际落点是
+    `D:\\VoicePill-models\\kokoro-multi-lang-v1_1`）。
+    """
+    configured = Settings.load().tts_model_dir.strip()
+    if configured:
+        return os.path.abspath(os.path.expanduser(configured))
+    env = os.environ.get("VOICEPILL_TTS_MODEL", "").strip()
+    if env:
+        return os.path.abspath(os.path.expanduser(env))
+    return os.path.join(os.path.dirname(local_model_dir()), TTS_MODEL_NAME)
+
+
 def project_root() -> str:
     """工程根目录（src/ 的上一层）。"""
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -203,6 +223,14 @@ class Settings:
     max_record_seconds: int = MAX_RECORD_SECONDS   # 单次录音上限（秒），0 = 不限
     pending_ttl_minutes: int = PENDING_TTL_MINUTES  # 待取文字的保鲜期（分钟），0 = 不过期
     retention_days: int = RETENTION_DAYS           # 留存数据保留天数，0 = 不清理
+    # ---- 发声（离线 TTS，见 speak.py 与 docs/移植方案.md 第 16 节）----
+    tts_model_dir: str = ""            # 留空 = 跟 ASR 模型并排
+    tts_speaker: int = 9               # 音色 id（Kokoro sid）
+    tts_speed: float = 1.0             # 语速
+    tts_threads: int = 8               # 合成线程；实测 8 最优，18 反而慢
+    tts_idle_unload_seconds: int = 900  # 静置这么久就把它从内存放掉（0 = 常留）
+    speak_replies: bool = False        # 每轮回复自动念出来（默认关）
+    speak_max_chars: int = 600         # 单次最多念多少字，超了截断
 
     # ---- 持久化 ----
 

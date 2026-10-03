@@ -22,29 +22,48 @@
     响应  {"ok": true,  "data": {...}}
     响应  {"ok": false, "error": "人话错误信息"}
 
-命令只有五个：`status` / `start` / `stop` / `cancel` / `take`。命令集合刻意
-留小：这条通道每多一个动词，就多一份「同机进程能拿它干什么」的想象力。
+命令只有七个：`status` / `start` / `stop` / `cancel` / `take` / `speak` /
+`shutup`。命令集合刻意留小：这条通道每多一个动词，就多一份「同机进程能拿它
+干什么」的想象力。`speak` / `shutup` 只让**本机扬声器**出声或闭嘴，读不到
+任何数据、也不落盘（见 docs/移植方案.md 第 16 节）。
 
 `take` 是**取走**语义（返回并清空），不是查看：改口供的场合比反复读同一段
 多得多，而清空后队列里也不会一直堆着用户说过的话。
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import secrets
 import threading
 import time
-from multiprocessing.connection import Client, Listener
+from multiprocessing.connection import (
+    AuthenticationError,
+    Client,
+    Listener,
+)
 from typing import Any, Callable, Optional
 
 import config
 
-# 管道名。同一台机器上多个用户各自独立，靠 SID 后缀区分（config.app_dir 已
-# 分用户）。这里用固定名 + 密钥，够用且好排查。
-PIPE_NAME = r"\\.\pipe\VoicePill"
+# 管道名前缀。**后面必须带用户标识**，不能所有用户共用一个名字。
+#
+# 用全局名的代价是实测出来的：本机另一个进程拿错密钥连上来（另一个用户的
+# `%LOCALAPPDATA%`，或者密钥文件被删掉重建之后），握手两边都崩——
+# 服务端的 `accept()` 抛 `AuthenticationError`（它不是 `OSError`，直接把
+# accept 线程打死，**控制面就这么永久死了**），而客户端卡在 `recv` 上
+# **永不返回**（实测 12 秒以上仍不回来）。名字带用户标识之后，这种客户端
+# 连管道都找不到，直接 `OSError` 快速失败，两边都安全。
+PIPE_PREFIX = r"\\.\pipe\VoicePill-"
+
+# 自测用：整个换掉管道名，就能在不碰真身的前提下测「控制面不在」这条路。
+PIPE_NAME_ENV = "VOICEPILL_PIPE_NAME"
 
 KEY_FILE = "bridge.key"
+
+# 客户端「建连 + authkey 握手」的总上限（秒）。握手没有超时参数，只能自己卡。
+CONNECT_TIMEOUT_SECONDS = 3.0
 
 # 单条请求上限。控制面只收发小 JSON，超过这个量说明对端不是我们的客户端。
 MAX_REQUEST_BYTES = 64 * 1024
@@ -53,11 +72,30 @@ MAX_REQUEST_BYTES = 64 * 1024
 # 说话，线程不会永远挂着。
 CONNECTION_IDLE_SECONDS = 60.0
 
-COMMANDS = ("status", "start", "stop", "cancel", "take")
+COMMANDS = ("status", "start", "stop", "cancel", "take",
+            "speak", "shutup")
 
 
 class BridgeError(Exception):
     """控制面不可用或对端返回了错误。"""
+
+
+def pipe_name() -> str:
+    """本用户专属的管道名。
+
+    用户标识从 `config.app_dir()`（就是 `%LOCALAPPDATA%\\VoicePill`）推出来，
+    不调 Win32：控制面两端读的是同一份环境变量，算出来必然一致。
+    取哈希而不是把用户名直接拼进去——路径里可能有空格或非 ASCII，管道名
+    不欢迎那些字符，哈希之后是纯十六进制。
+
+    设了 `VOICEPILL_PIPE_NAME` 就整个覆盖（自测用，见 tools/bridge-selftest.py）。
+    """
+    override = os.environ.get(PIPE_NAME_ENV, "").strip()
+    if override:
+        return override
+    tag = hashlib.sha256(
+        os.path.normcase(config.app_dir()).encode("utf-8")).hexdigest()[:16]
+    return PIPE_PREFIX + tag
 
 
 def key_path() -> str:
@@ -93,6 +131,42 @@ def load_or_create_key() -> bytes:
 
 # ---------- 客户端（插件/脚本/自测都走这里）----------
 
+def _connect(timeout: float = CONNECT_TIMEOUT_SECONDS):
+    """建连 + authkey 握手，**带硬上限**。失败一律抛 `BridgeError`。
+
+    `Client()` 的握手没有超时参数：密钥对不上时，服务端那边抛异常走人，
+    客户端却永远等不到回话（实测 12 秒以上不返回，而且一直不返回）。所以
+    把建连放进一个旁路线程，到点就放弃。
+
+    代价说清楚：超时之后那个线程还挂在 `recv` 上（Python 杀不掉阻塞在系统
+    调用里的线程），只有 daemon 线程随进程退出这一条兜底。调用方全是短命
+    进程（钩子 / 自测 / `--check`），够用；**别在长命进程里反复吃到超时**。
+    """
+    box: dict = {}
+
+    def worker() -> None:
+        try:
+            box["conn"] = Client(pipe_name(), family="AF_PIPE",
+                                 authkey=load_or_create_key())
+        except BaseException as exc:       # noqa: BLE001 —— 原样带走，外面分类
+            box["error"] = exc
+
+    th = threading.Thread(target=worker, name="voicepill-bridge-connect",
+                          daemon=True)
+    th.start()
+    th.join(timeout)
+    if th.is_alive():
+        raise BridgeError(
+            "控制面握手 %.1f 秒没完成（密钥对不上，或控制面半死不活）。"
+            % timeout)
+    exc = box.get("error")
+    if exc is not None:
+        if isinstance(exc, AuthenticationError):
+            raise BridgeError("控制面拒绝握手（authkey 对不上）：%s" % exc) from exc
+        raise BridgeError("连不上控制面（常驻进程没在跑？）：%s" % exc) from exc
+    return box["conn"]
+
+
 def call(cmd: str, timeout: float = 15.0, **args: Any) -> Any:
     """发一条命令，返回 data。失败抛 BridgeError。
 
@@ -103,11 +177,7 @@ def call(cmd: str, timeout: float = 15.0, **args: Any) -> Any:
     if cmd not in COMMANDS:
         raise BridgeError("未知命令：%s" % cmd)
 
-    try:
-        conn = Client(PIPE_NAME, family="AF_PIPE", authkey=load_or_create_key())
-    except (OSError, EOFError, ValueError) as exc:
-        raise BridgeError(
-            "连不上控制面（常驻进程没在跑？）：%s" % exc) from exc
+    conn = _connect()
 
     try:
         conn.send({"cmd": cmd, "args": args})
@@ -154,6 +224,8 @@ class BridgeServer:
         self._lock = threading.Lock()
         self.started = False
         self.error: Optional[str] = None
+        # 最近一次「连上来但握手没过」的原因。这不是致命错误，只留个痕。
+        self.last_error: Optional[str] = None
 
     def start(self) -> None:
         self._accept_thread = threading.Thread(
@@ -168,9 +240,8 @@ class BridgeServer:
         """
         self._stop.set()
         try:
-            Client(PIPE_NAME, family="AF_PIPE",
-                   authkey=load_or_create_key()).close()
-        except (OSError, EOFError, ValueError):
+            _connect().close()
+        except BridgeError:
             pass
 
     @property
@@ -183,7 +254,7 @@ class BridgeServer:
     def _serve(self) -> None:
         try:
             self._listener = Listener(
-                PIPE_NAME, family="AF_PIPE", authkey=load_or_create_key())
+                pipe_name(), family="AF_PIPE", authkey=load_or_create_key())
         except OSError as exc:
             self.error = str(exc)
             return
@@ -196,6 +267,13 @@ class BridgeServer:
                 if not self._stop.is_set():
                     self.error = str(exc)
                 break
+            except Exception as exc:            # noqa: BLE001
+                # **握手失败不是致命错误。** Listener 还活着，下一个正常客户端
+                # 照样能连。以前这里只接 OSError，于是 `AuthenticationError`
+                # 直接冒出去把 accept 线程带走——任何一个拿错密钥的本机进程都
+                # 能让控制面**永久失联**，而驻留进程自己毫不知情。实测踩过。
+                self.last_error = "%s: %s" % (type(exc).__name__, exc)
+                continue
             threading.Thread(target=self._handle, args=(conn,),
                              name="voicepill-bridge-conn", daemon=True).start()
 

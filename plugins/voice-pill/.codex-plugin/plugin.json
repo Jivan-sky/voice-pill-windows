@@ -1,6 +1,6 @@
 {
   "name": "voice-pill",
-  "version": "0.1.0+codex.20261003054210",
+  "version": "0.1.0+codex.20261003072103",
   "description": "Voice Pill: press Fn to dictate, and let Codex read what you said.",
   "author": {
     "name": "Jivan"

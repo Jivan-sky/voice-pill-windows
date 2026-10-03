@@ -21,11 +21,16 @@ Voice Pill 的 Windows 移植工程。按住热键说话，松手把文字粘到
 | 热键链路 | ✅ **验证通过** —— 进程在 `WinSta0\Default`、钩子+消息泵自激自收正常、物理按键实测收到 134 条 |
 | 通路验证（M1） | ✅ **完成（2026-10-02）** —— Fn → 采音 → NDJSON 管道 → 解码 → 粘贴，四段逐段验过，假引擎全链路一次通过（`EXIT CODE 0`） |
 | 本地后端（M2.5） | ✅ **完成（2026-10-03）** —— `local` 跑 SenseVoice-Small int8，RTF 0.027，`pipe-selftest` 全链路通过，实时字幕保住。见 `docs/移植方案.md` 6.5 |
+| 发声（2026-10-03） | ✅ **完成** —— 离线神经 TTS，让它回话也能听见。Kokoro 多语言 v1.1（103 音色）落在 `D:\VoicePill-models\`，与 ASR 模型并排；懒加载、整段一条输出流 + 合成预取一句、按 Fn 立刻打断。**默认按需**（`speak_replies=false`），走控制面 `speak`/`shutup`、MCP 工具、或回合结束 `Stop` 钩子。不联网、不需要账号。见 `docs/移植方案.md` 第 16 节 |
 | 远端后端 | ❌ **两条都不可用** —— Codex 要 ChatGPT 付费令牌；豆包非官方协议 2026-10-03 复查确认服务端已不路由（凭据与握手都正常，服务端自己回 `service discovery failure`）。代码保留，改 `settings.json` 一行可切回。见 6.4 / 6.5 |
 | 真麦克风验收 | ✅ **通过（2026-10-03）** —— 真按 Fn 录 6.79 秒 → 解码 0.19 秒 → 粘贴成功，**用户确认「很准」** |
 | 常驻形态（M5 提前） | ✅ **完成（2026-10-03）** —— 单实例锁、无窗口开机自启（看门狗）、崩溃自拉、120 秒录音护栏、日志与留存清理、配置热重载、`--stop`。见 `docs/移植方案.md` 第 11 节 |
-| 控制面（2026-10-03） | ✅ **完成** —— 命名管道 + authkey，五个命令（`status`/`start`/`stop`/`cancel`/`take`）。让外部进程（Codex 插件）能问状态、驱动录音、取走文字。见 `docs/移植方案.md` 第 12 节 |
-| Codex 插件（2026-10-03） | ✅ **完成** —— 按 Fn 说的字注入当轮对话；六个 MCP 工具。插件源码在 `plugins/voice-pill/`，一键装：`plugins/install.py`。见 `docs/移植方案.md` 第 13 节 |
+| 控制面（2026-10-03） | ✅ **完成** —— 命名管道 + authkey，七个命令（`status`/`start`/`stop`/`cancel`/`take`/`speak`/`shutup`）。让外部进程（Codex 插件）能问状态、驱动录音、取走文字。见 `docs/移植方案.md` 第 12 节 |
+| 控制面加固（2026-10-03） | ✅ **完成** —— 发声自测踩出两个真 bug 并修掉：管道名原本全机共用（另一个用户、或密钥重建后的客户端能把控制面**永久打死**），客户端握手原本没有超时（会**永不返回**）。现在管道名按用户派生、建连 3 秒上限、服务端不被坏连接带走；`tools/bridge-selftest.py` 22 项专盯坏输入。见 `docs/移植方案.md` 12.5 |
+| 交付护栏（2026-10-03） | ✅ **完成** —— 对照上游 0.2.4：粘贴卡死 8 秒自动解锁；非 `PasteError` 异常不再静默锁死 Fn；代际令牌保证迟到的旧交付不碰新会话。见 `docs/移植方案.md` 第 14 节 |
+| Codex 插件（2026-10-03） | ✅ **完成** —— 按 Fn 说的字注入当轮对话；八个 MCP 工具。插件源码在 `plugins/voice-pill/`，一键装：`plugins/install.py`。见 `docs/移植方案.md` 第 13 节 |
+| persona（2026-10-03） | ✅ **完成** —— 不另造人设：照 ANC（`HA7CH/ai-native-company`）的七段式 schema 写在 `plugins/voice-pill/persona.md`，`SKILL.md` 只引用不复述，`tools/persona-selftest.py` 14 项把关。见 `docs/移植方案.md` 第 15 节 |
+| 与 Codex 共同启停（2026-10-03） | ✅ **完成** —— 开 Codex 自动拉起（`SessionStart` 钩子，幂等），关 Codex 自动收摊（看门狗照 `anchor.json` 盯住**最外层**那个 Codex 进程，人一没就走 `--stop` 优雅路径）。**认人不认号**：句柄钉住内核里的进程对象，PID 被复用也不会认错；纸条读不到就退回常驻，绝不因为绑不上就不干活。`tools/supervise-selftest.py` 47 项把关。见 `docs/移植方案.md` 第 17 节 |
 
 **M1 验收记录（2026-10-02）**
 
@@ -63,16 +68,18 @@ Voice Pill 的 Windows 移植工程。按住热键说话，松手把文字粘到
 | `tools/pipe-selftest.py` | 拿 WAV 直接喂引擎，跳过麦克风和热键，单独验管道/解码/超时 |
 | `tools/paste-selftest.py` | 自建靶子文本框验粘贴（不污染用户正在用的窗口），含剪贴板还原 |
 | `tools/resident-selftest.py` | 常驻形态自测：单实例/护栏/清理/日志滚动/`--stop`/热重载，起真进程从外面观察，**不需要人也不需要麦克风** |
+| `tools/supervise-selftest.py` | 「和 Codex 共同启停」自测：认人 / 句柄 / 纸条 / 换人 / 收摊 / 兜底，不碰真身 |
 | `tools/mock-asr.py` | 假引擎（实现 NDJSON 契约），用来单独验管道/解码/粘贴 |
 | `tools/local-asr.py` | **本地离线引擎**（sherpa-onnx + SenseVoice），实现同一份 NDJSON 契约，`local` 后端用它 |
 | `src/console.py` | 控制台编码兜底（管道下打印 ✅ 会 GBK 崩）+ 应用日志 |
 | `src/single_instance.py` | 单实例互斥体：两个实例会各采一遍麦克风、各粘一遍 |
 | `src/bridge.py` | 控制面：命名管道 + authkey，给外部进程驱动本进程用 |
-| `src/supervise.py` | 看门狗：真身非正常退出时重拉，正常退出则一起退 |
+| `src/anchor.py` | 锚点：沿父链找**最外层**那个 Codex 进程并落成纸条；句柄 + 映像核对，PID 被复用也不认错人 |
+| `src/supervise.py` | 看门狗：真身非正常退出时重拉，正常退出则一起退；还照 `anchor.json` 盯住 Codex，它一退就请真身收摊 |
 | `src/autostart.py` | 开机自启的安装/卸载/查看 |
 | `THIRD_PARTY.md` | 第三方组件与许可清单（本仓库内的正本） |
 | `docs/移植方案.md` | 路线对比、键位实测记录、里程碑、风险 |
-| `plugins/voice-pill/` | Codex 插件源码：技能、`.mcp.json`、`UserPromptSubmit` 钩子（**仓库是唯一源码**，靠目录联接出现在 Codex 眼里） |
+| `plugins/voice-pill/` | Codex 插件源码：技能、`.mcp.json`、三个钩子（`SessionStart` 拉起+绑命 / `UserPromptSubmit` 说话进对话 / `Stop` 回复出声）（**仓库是唯一源码**，靠目录联接出现在 Codex 眼里） |
 | `plugins/install.py` | 一键把插件接到本机：建目录联接、铺 venv、写机器相关路径、`codex plugin add` |
 
 ## 快速开始
@@ -136,7 +143,7 @@ bridge.call("status")   # {pid, phase, provider, hotkey_alive, pending, ...}
 bridge.call("take")     # {texts: [...], count: n} —— 取走并清空
 ```
 
-五个命令：`status` / `start` / `stop` / `cancel` / `take`。`take` 是**取走**语义，
+七个命令：`status` / `start` / `stop` / `cancel` / `take` / `speak` / `shutup`。`take` 是**取走**语义，
 且只返回保鲜期内的字：`pending_ttl_minutes`（默认 30 分钟）之外的旧话直接丢弃，
 不会再注入到下一轮对话里。
 
@@ -164,9 +171,11 @@ Codex 也能反过来问状态、请你录一段、把队列里的字取走。�
 - `.mcp.json` 与 `hooks/hooks.json` 里的路径**只能是绝对路径**（插件会被整包拷进
   Codex 自己的 cache，相对路径在那边解析不了）。这两处由 `install.py` 生成。
 
-装好后 Codex 多出六个工具：`voice_pill_status` / `voice_pill_listen` /
-`voice_pill_stop` / `voice_pill_cancel` / `voice_pill_take` / `voice_pill_prompt_hook`，
-外加 `UserPromptSubmit` 钩子。待取文字有保鲜期（`pending_ttl_minutes`，默认 30 分钟）：
+装好后 Codex 多出八个工具：`voice_pill_status` / `voice_pill_listen` /
+`voice_pill_stop` / `voice_pill_cancel` / `voice_pill_take` / `voice_pill_speak` /
+`voice_pill_shutup` / `voice_pill_prompt_hook`，外加三个钩子：`SessionStart`
+（开 Codex 拉起驻留实例并绑命）、`UserPromptSubmit`（说的话进对话）、`Stop`
+（回复出声）。待取文字有保鲜期（`pending_ttl_minutes`，默认 30 分钟）：
 更早说的不再注入，也不会留到下一轮。
 
 ## 许可
