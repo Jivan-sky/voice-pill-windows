@@ -567,6 +567,8 @@ class VoicePill:
             changes.append("最长录音 → %s 秒" % new.max_record_seconds)
         if new.retention_days != old.retention_days:
             changes.append("留存天数 → %s" % new.retention_days)
+        if new.pending_ttl_minutes != old.pending_ttl_minutes:
+            changes.append("待取保鲜期 → %s 分钟" % new.pending_ttl_minutes)
         if new.local_model_dir != old.local_model_dir:
             changes.append("本地模型目录 → %s" % new.local_model_dir)
         if new.hud_enabled != old.hud_enabled:
@@ -707,6 +709,7 @@ def run_check(settings: config.Settings) -> int:
     print("  自动粘贴  ：%s" % settings.auto_paste)
     print("  最长录音  ：%s 秒（0 = 不限）" % settings.max_record_seconds)
     print("  留存天数  ：%s（0 = 不清理）" % settings.retention_days)
+    print("  保鲜期    ：%s 分钟（0 = 不过期）" % settings.pending_ttl_minutes)
 
     print("\n[常驻]")
     probe = single_instance.InstanceLock()
