@@ -31,6 +31,7 @@ Voice Pill 的 Windows 移植工程。按住热键说话，松手把文字粘到
 | 真麦克风验收 | ✅ **通过（2026-10-03）** —— 真按 Fn 录 6.79 秒 → 解码 0.19 秒 → 粘贴成功，**用户确认「很准」** |
 | 常驻形态（M5 提前） | ✅ **完成（2026-10-03）** —— 单实例锁、无窗口开机自启（看门狗）、崩溃自拉、120 秒录音护栏、日志与留存清理、配置热重载、`--stop`。见 `docs/移植方案.md` 第 11 节 |
 | 控制面（2026-10-03） | ✅ **完成** —— 命名管道 + authkey，五个命令（`status`/`start`/`stop`/`cancel`/`take`）。让外部进程（Codex 插件）能问状态、驱动录音、取走文字。见 `docs/移植方案.md` 第 12 节 |
+| Codex 插件（2026-10-03） | ✅ **完成** —— 按 Fn 说的字注入当轮对话；六个 MCP 工具。插件源码在 `plugins/voice-pill/`，一键装：`plugins/install.py`。见 `docs/移植方案.md` 第 13 节 |
 
 **M1 验收记录（2026-10-02）**
 
@@ -77,6 +78,8 @@ Voice Pill 的 Windows 移植工程。按住热键说话，松手把文字粘到
 | `src/autostart.py` | 开机自启的安装/卸载/查看 |
 | `THIRD_PARTY.md` | 第三方组件与许可清单（本仓库内的正本） |
 | `docs/移植方案.md` | 路线对比、键位实测记录、里程碑、风险 |
+| `plugins/voice-pill/` | Codex 插件源码：技能、`.mcp.json`、`UserPromptSubmit` 钩子（**仓库是唯一源码**，靠目录联接出现在 Codex 眼里） |
+| `plugins/install.py` | 一键把插件接到本机：建目录联接、铺 venv、写机器相关路径、`codex plugin add` |
 
 ## 快速开始
 
@@ -142,6 +145,35 @@ bridge.call("take")     # {texts: [...], count: n} —— 取走并清空
 五个命令：`status` / `start` / `stop` / `cancel` / `take`。`take` 是**取走**语义，
 且只返回保鲜期内的字：`pending_ttl_minutes`（默认 30 分钟）之外的旧话直接丢弃，
 不会再注入到下一轮对话里。
+
+## 接进 Codex（插件）
+
+插件把这份能力接给 Codex：按 Fn 说的字会作为**本轮附加上下文**注入当轮对话；
+Codex 也能反过来问状态、请你录一段、把队列里的字取走。语音引擎仍是本仓库这一个
+常驻进程，插件只是控制面客户端（见上一节），**音频不出机器**。
+
+```bash
+# 装（可反复跑，缺什么补什么；--check 只看现状）
+.venv\Scripts\python.exe plugins\install.py
+```
+
+脚本做四件事：把 `%USERPROFILE%\plugins\voice-pill` 建成指向本仓库
+`plugins/voice-pill` 的**目录联接**；铺好插件自己的 venv
+（`%LOCALAPPDATA%\VoicePill\plugin-venv`）；写机器相关的两条绝对路径；
+`codex plugin add voice-pill@personal`。**装完要新开一个 Codex 线程**才会拾取。
+
+两条硬约束（实测，别绕）：
+
+- 插件在 Codex 眼里必须住在一个**不含 `&`** 的路径上——本仓库所在的
+  `D:\Own_tools&skills\...` 带 `&`：命令串不加引号会被 cmd 当分隔符拆断（钩子报
+  Failed），加了引号 Codex 只回一句 `Completed`，脚本根本没被执行。所以走目录联接。
+- `.mcp.json` 与 `hooks/hooks.json` 里的路径**只能是绝对路径**（插件会被整包拷进
+  Codex 自己的 cache，相对路径在那边解析不了）。这两处由 `install.py` 生成。
+
+装好后 Codex 多出六个工具：`voice_pill_status` / `voice_pill_listen` /
+`voice_pill_stop` / `voice_pill_cancel` / `voice_pill_take` / `voice_pill_prompt_hook`，
+外加 `UserPromptSubmit` 钩子。待取文字有保鲜期（`pending_ttl_minutes`，默认 30 分钟）：
+更早说的不再注入，也不会留到下一轮。
 
 ## 许可
 

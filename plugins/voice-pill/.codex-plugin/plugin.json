@@ -1,0 +1,33 @@
+{
+  "name": "voice-pill",
+  "version": "0.1.0+codex.20261003052845",
+  "description": "Voice Pill: press Fn to dictate, and let Codex read what you said.",
+  "author": {
+    "name": "Jivan"
+  },
+  "license": "MIT",
+  "keywords": [
+    "voice",
+    "dictation",
+    "speech",
+    "asr"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Voice Pill",
+    "shortDescription": "Press Fn to dictate; Codex reads the transcript.",
+    "longDescription": "Voice Pill connects Codex to the local Voice Pill dictation engine. Press Fn, speak, and the words land at your cursor. The plugin also lets Codex read back what you said, or record a segment on request. Audio never leaves the machine: transcription runs locally.",
+    "developerName": "Jivan",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Read"
+    ],
+    "defaultPrompt": [
+      "Listen to a voice note and act on it",
+      "What did I just dictate?",
+      "Show Voice Pill status"
+    ]
+  }
+}

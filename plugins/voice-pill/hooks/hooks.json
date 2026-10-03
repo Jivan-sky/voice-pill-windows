@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:\\Users\\sjw\\plugins\\voice-pill\\hook.cmd",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
