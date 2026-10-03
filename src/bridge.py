@@ -32,12 +32,15 @@
 """
 from __future__ import annotations
 
+import ctypes
 import hashlib
+import hmac
 import json
 import os
 import secrets
 import threading
 import time
+from ctypes import wintypes
 from multiprocessing.connection import (
     AuthenticationError,
     Client,
@@ -77,8 +80,7 @@ def json_pipe_name() -> str:
 
 def auth_token(key: bytes, nonce: str) -> str:
     """挑战应答的应答：HMAC-SHA256(key, ASCII(nonce))，64 位小写 hex。"""
-    import hmac as _hmac
-    return _hmac.new(key, nonce.encode("ascii"), "sha256").hexdigest()
+    return hmac.new(key, nonce.encode("ascii"), "sha256").hexdigest()
 KEY_FILE = "bridge.key"
 
 # 客户端「建连 + authkey 握手」的总上限（秒）。握手没有超时参数，只能自己卡。
@@ -334,6 +336,301 @@ class BridgeServer:
         if not isinstance(args, dict):
             raise ValueError("args 不是 JSON 对象")
         return cmd, args
+
+
+# ---------- 第二条通道：NDJSON 命名管道（语言无关）----------
+#
+# 上面那个 BridgeServer 走的是 multiprocessing.connection：挑战应答是 HMAC-MD5、
+# 帧是 pickle，**只有 Python 说得出来**。控制面是给外部进程用的契约，不该被
+# 实现语言钉死（issue #1 要的就是「Codex 之外的 Agent 也能挂上」），所以这里再
+# 开一张嘴：同样七个命令、同一份 bridge.key，线上跑的是一行一条 JSON。旧的
+# 通道一个字不改，纯增量。
+#
+# 为什么用 ctypes 直调 kernel32：标准库没有命名管道**服务端**，而这件事不值得
+# 为它引入第三方包。每条连接都在自己的线程里处理：坏连接（错密钥、非 JSON、
+# 超长行、连上不说话）只影响它自己，accept 循环照转——旧通道栽过的那个坑
+# （一次握手失败把 accept 线程打死、控制面永久失联，见 docs/移植方案.md 12.5）
+# 不许在这里重演。
+
+_k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+# argtypes/restype 一个都不能省：句柄是 64 位，不声明就会被当成 32 位 int 传，
+# 高 32 位静默丢掉——然后就"连上了别的东西"，还查不出来。
+_k32.CreateNamedPipeW.restype = wintypes.HANDLE
+_k32.CreateNamedPipeW.argtypes = [
+    wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD,
+    wintypes.DWORD, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p]
+_k32.ConnectNamedPipe.argtypes = [wintypes.HANDLE, ctypes.c_void_p]
+_k32.CloseHandle.argtypes = [wintypes.HANDLE]
+_k32.CreateFileW.restype = wintypes.HANDLE
+_k32.CreateFileW.argtypes = [
+    wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+    wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+_k32.WaitNamedPipeW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD]
+_k32.ReadFile.argtypes = [wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD,
+                          ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p]
+_k32.WriteFile.argtypes = [wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD,
+                           ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p]
+_k32.PeekNamedPipe.argtypes = [wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD,
+                               ctypes.POINTER(wintypes.DWORD),
+                               ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p]
+
+_PIPE_ACCESS_DUPLEX = 0x00000003
+_FILE_FLAG_FIRST_PIPE_INSTANCE = 0x00080000
+_PIPE_UNLIMITED_INSTANCES = 255
+_INVALID_HANDLE = ctypes.c_void_p(-1).value
+_GENERIC_READ_WRITE = 0xC0000000
+_OPEN_EXISTING = 3
+
+# ConnectNamedPipe 的两个「其实没事」的错误码
+_ERROR_PIPE_CONNECTED = 535      # 客户端在 CreateNamedPipe 与 ConnectNamedPipe 之间连上了
+_ERROR_NO_DATA = 232             # 那一瞬间连上又跑了
+
+# PeekNamedPipe 只回答「有没有数据」，没有就歇一下再看。用轮询而不是阻塞
+# ReadFile，是为了让"空闲 60 秒"这条规则能**准时**生效：阻塞中的同步
+# ReadFile 关不掉（CloseHandle 不取消挂起的 I/O），而 CancelSynchronousIo
+# 又要多引一层线程句柄。20 毫秒的粒度对控制面绰绰有余。
+_READ_POLL_SECONDS = 0.02
+
+
+class _PipeClosed(Exception):
+    """对端关了管道（或者我们把这条自己的管道关了）。"""
+
+
+class _LineTooLong(Exception):
+    """一行超过 MAX_REQUEST_BYTES：对端不像我们的客户端。"""
+
+
+def _close_handle(handle) -> None:
+    try:
+        _k32.CloseHandle(handle)
+    except OSError:
+        pass
+
+
+def _winerror_text(where: str) -> str:
+    return "%s 失败：WinError %d" % (where, ctypes.get_last_error())
+
+
+def _parse_json_line(raw: bytes) -> dict:
+    """把一行 UTF-8 JSON 解析成对象。说人话，别把栈丢给对端。"""
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise ValueError("这一行不是 JSON 对象（%s）" % exc) from exc
+    if not isinstance(data, dict):
+        raise ValueError("这一行不是 JSON 对象")
+    return data
+
+
+def _open_pipe(name: str, timeout_ms: int = 0):
+    """尽力连一次命名管道；连不上返回 0（给 stop() 叫醒 accept 用）。"""
+    if timeout_ms and not _k32.WaitNamedPipeW(name, timeout_ms):
+        return 0
+    handle = _k32.CreateFileW(name, _GENERIC_READ_WRITE, 0, None,
+                              _OPEN_EXISTING, 0, None)
+    if not handle or handle == _INVALID_HANDLE:
+        return 0
+    return handle
+
+
+class _PipeReader:
+    """一条连接上的行读取器：把「读完一行」与「剩下的字节」绑在一起。
+
+    服务端每次 ReadFile 都可能一次带回两行——客户端常常把 auth 和请求连着写
+    （自测里正是如此），只按第一个换行切、把多余的字节丢掉，第二条就永远等
+    不到了。所以多余的字节必须留在**这条连接**上，下次接着用。
+    """
+
+    def __init__(self, handle) -> None:
+        self._handle = handle
+        self._buf = bytearray()
+
+    def read_line(self) -> bytes:
+        """读到换行符为止。对端关了抛 _PipeClosed；太长抛 _LineTooLong。"""
+        while True:
+            end = self._buf.find(b"\n")
+            if end >= 0:
+                line = bytes(self._buf[:end])
+                del self._buf[:end + 1]
+                return line
+            if len(self._buf) > MAX_REQUEST_BYTES:
+                raise _LineTooLong()
+            available = wintypes.DWORD(0)
+            if not _k32.PeekNamedPipe(self._handle, None, 0, None,
+                                      ctypes.byref(available), None):
+                raise _PipeClosed(_winerror_text("PeekNamedPipe"))
+            if not available.value:
+                time.sleep(_READ_POLL_SECONDS)
+                continue
+            chunk = ctypes.create_string_buffer(min(available.value, 4096))
+            got = wintypes.DWORD(0)
+            if not _k32.ReadFile(self._handle,
+                                 ctypes.cast(chunk, ctypes.c_void_p),
+                                 len(chunk), ctypes.byref(got), None):
+                raise _PipeClosed(_winerror_text("ReadFile"))
+            if not got.value:
+                raise _PipeClosed("管道读回来 0 字节")
+            self._buf += chunk.raw[:got.value]
+
+
+class JsonBridgeServer:
+    """NDJSON 命名管道服务端。对外形状与 BridgeServer 一致。
+
+    `handler(cmd, args)` 由调用方提供，返回 data；抛异常则原样变成 error
+    文本回给对端——控制面不该因为一条坏命令把驻留进程带崩。
+    """
+
+    def __init__(self, handler: Callable[[str, dict], Any]) -> None:
+        self._handler = handler
+        self._stop = threading.Event()
+        self._accept_thread: Optional[threading.Thread] = None
+        self._name = json_pipe_name()
+        self._key = b""
+        self.started = False
+        self.error: Optional[str] = None
+        # 最近一次「连上来但没通过握手」的原因。不致命，只留个痕。
+        self.last_error: Optional[str] = None
+
+    def start(self) -> None:
+        self._name = json_pipe_name()
+        self._key = load_or_create_key()
+        self._accept_thread = threading.Thread(
+            target=self._serve, name="voicepill-json-bridge", daemon=True)
+        self._accept_thread.start()
+
+    def stop(self) -> None:
+        """停服务，并叫醒阻塞在 ConnectNamedPipe 上的 accept 线程。
+
+        它没有超时参数，光置事件叫不醒——自己连一次自己（照 BridgeServer.stop
+        的做法）。连不上就算了，join 也只等一小会儿，绝不吊死调用方。
+        """
+        self._stop.set()
+        handle = _open_pipe(self._name, timeout_ms=2000)
+        if handle:
+            _close_handle(handle)
+        thread = self._accept_thread
+        if thread is not None:
+            thread.join(timeout=5.0)
+
+    @property
+    def alive(self) -> bool:
+        thread = self._accept_thread
+        return bool(thread and thread.is_alive())
+
+    # ---------- 内部 ----------
+
+    def _serve(self) -> None:
+        first = True
+        while not self._stop.is_set():
+            try:
+                handle = self._accept(first)
+            except OSError as exc:
+                if not self._stop.is_set():
+                    self.error = str(exc)
+                break
+            first = False
+            if handle is None:
+                if self._stop.is_set():
+                    break
+                continue
+            threading.Thread(target=self._handle, args=(handle,),
+                             name="voicepill-json-conn", daemon=True).start()
+
+    def _accept(self, first: bool):
+        """建一个实例、等一条连接。没连上返回 None（下一圈接着等）。"""
+        flags = _PIPE_ACCESS_DUPLEX
+        if first:
+            # 名字已经被占（真身在跑，或上一轮没退干净）就**直接失败**，绝不
+            # 悄悄变成第二个实例去和真身抢客户端。
+            flags |= _FILE_FLAG_FIRST_PIPE_INSTANCE
+        handle = _k32.CreateNamedPipeW(
+            self._name, flags,
+            0,       # PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT 三者都是 0
+            _PIPE_UNLIMITED_INSTANCES,
+            MAX_REQUEST_BYTES, MAX_REQUEST_BYTES,
+            0, None)
+        if not handle or handle == _INVALID_HANDLE:
+            raise ctypes.WinError(ctypes.get_last_error())
+        self.started = True
+        try:
+            connected = bool(_k32.ConnectNamedPipe(handle, None))
+            error_code = ctypes.get_last_error()
+        except BaseException:
+            _close_handle(handle)
+            raise
+        if self._stop.is_set():
+            _close_handle(handle)
+            return None
+        if connected or error_code == _ERROR_PIPE_CONNECTED:
+            return handle
+        _close_handle(handle)
+        if error_code != _ERROR_NO_DATA:
+            time.sleep(0.05)     # 别在错误上空转烧 CPU
+        return None
+
+    def _handle(self, handle) -> None:
+        """处理一条连接。任何异常只回一条 ok:false，然后关掉这一条。"""
+        closed = threading.Event()
+
+        def close_once() -> None:
+            # 空闲计时器与正常收尾都会走这里：句柄只能关一次，双关会把别的
+            # 连接带崩。
+            if not closed.is_set():
+                closed.set()
+                _close_handle(handle)
+
+        timer = threading.Timer(CONNECTION_IDLE_SECONDS, close_once)
+        timer.daemon = True
+        timer.start()
+        try:
+            self._serve_connection(handle)
+        except _LineTooLong:
+            self._try_write(handle, {
+                "ok": False,
+                "error": "请求超长（上限 %d 字节）" % MAX_REQUEST_BYTES})
+        except _PipeClosed:
+            pass
+        except Exception as exc:                      # noqa: BLE001
+            self._try_write(handle, {
+                "ok": False, "error": "%s: %s" % (type(exc).__name__, exc)})
+        finally:
+            timer.cancel()
+            close_once()
+
+    def _serve_connection(self, handle) -> None:
+        reader = _PipeReader(handle)
+        nonce = secrets.token_hex(16)
+        self._write(handle, {"nonce": nonce})
+        request = _parse_json_line(reader.read_line())
+        token = request.get("auth")
+        if not isinstance(token, str) or not hmac.compare_digest(
+                auth_token(self._key, nonce), token):
+            # 握手失败**不是**致命错误：只关这一条，accept 照转。
+            self.last_error = "鉴权失败：对端没给出正确的应答"
+            self._write(handle, {"ok": False, "error": "鉴权失败"})
+            return
+        request = _parse_json_line(reader.read_line())
+        cmd, args = BridgeServer._parse(request)
+        self._write(handle, {"ok": True, "data": self._handler(cmd, args)})
+
+    def _write(self, handle, payload: dict) -> None:
+        line = json.dumps(payload, ensure_ascii=False,
+                          separators=(",", ":")).encode("utf-8") + b"\n"
+        if len(line) > MAX_REQUEST_BYTES:
+            raise ValueError("响应超过 %d 字节" % MAX_REQUEST_BYTES)
+        buf = ctypes.create_string_buffer(line, len(line))
+        written = wintypes.DWORD(0)
+        if not _k32.WriteFile(handle, ctypes.cast(buf, ctypes.c_void_p),
+                              len(line), ctypes.byref(written), None):
+            raise _PipeClosed(_winerror_text("WriteFile"))
+
+    def _try_write(self, handle, payload: dict) -> None:
+        """错误路径上回话；回不出去就算了（对端可能已经走了）。"""
+        try:
+            self._write(handle, payload)
+        except (OSError, _PipeClosed, ValueError):
+            pass
 
 
 def status_line() -> str:
