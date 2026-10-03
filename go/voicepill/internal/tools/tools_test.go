@@ -15,16 +15,38 @@ import (
 )
 
 type scriptedCaller struct {
-	calls   []string
-	handler func(cmd string, args map[string]any) (json.RawMessage, error)
+	calls        []string
+	probes       []time.Duration
+	events       []string
+	handler      func(cmd string, args map[string]any) (json.RawMessage, error)
+	probeHandler func(timeout time.Duration) (json.RawMessage, error)
 }
 
 func (f *scriptedCaller) Call(cmd string, args map[string]any) (json.RawMessage, error) {
 	f.calls = append(f.calls, cmd)
+	f.events = append(f.events, "call:"+cmd)
 	if f.handler == nil {
 		return json.RawMessage("{}"), nil
 	}
 	return f.handler(cmd, args)
+}
+
+// Probe 默认回 idle（引擎在跑）：大多数用例只关心 Ensure 之后的那条链路。
+func (f *scriptedCaller) Probe(timeout time.Duration) (json.RawMessage, error) {
+	f.probes = append(f.probes, timeout)
+	f.events = append(f.events, "probe")
+	if f.probeHandler == nil {
+		return json.RawMessage(`{"phase":"idle"}`), nil
+	}
+	return f.probeHandler(timeout)
+}
+
+// isolateEngine 把引擎根与 LOCALAPPDATA 挪进沙箱：探不到引擎时 engine.Ensure
+// 只会走到「找不到启动器」就返回，绝不拉起任何东西，也不碰真身的纸条/密钥。
+func isolateEngine(t *testing.T) {
+	t.Helper()
+	t.Setenv("LOCALAPPDATA", t.TempDir())
+	t.Setenv("VOICEPILL_ENGINE_ROOT", t.TempDir())
 }
 
 func raw(s string) json.RawMessage { return json.RawMessage(s) }
@@ -51,6 +73,7 @@ func countCalls(calls []string, cmd string) int {
 // listen：用户提前按 Fn 松手（status 第二次就 idle）时不该傻等 seconds。
 func TestListenStopsWhenUserReleasesEarly(t *testing.T) {
 	withFastPoll(t)
+	isolateEngine(t)
 	statusCalls := 0
 	fake := &scriptedCaller{handler: func(cmd string, args map[string]any) (json.RawMessage, error) {
 		switch cmd {
@@ -79,6 +102,13 @@ func TestListenStopsWhenUserReleasesEarly(t *testing.T) {
 	if countCalls(fake.calls, "start") != 1 || countCalls(fake.calls, "stop") != 1 {
 		t.Fatalf("start/stop 调用次数不对：%v", fake.calls)
 	}
+	// 链路顺序必须是 Ensure（探一次 status）→ start …，别跳过接线。
+	if len(fake.events) < 2 || fake.events[0] != "probe" || fake.events[1] != "call:start" {
+		t.Fatalf("事件序 = %v，想要 probe 在最前、紧接 call:start", fake.events)
+	}
+	if len(fake.probes) != 1 || fake.probes[0] != statusProbeTimeout {
+		t.Fatalf("Ensure 的探针预算 = %v，想要 %v", fake.probes, statusProbeTimeout)
+	}
 	if got := out.(map[string]any)["text"]; got != "你好" {
 		t.Fatalf("text = %v，想要 你好", got)
 	}
@@ -87,6 +117,7 @@ func TestListenStopsWhenUserReleasesEarly(t *testing.T) {
 // stop：没在录音就直接取队列，不发 stop。
 func TestStopTakesQueueWithoutStopping(t *testing.T) {
 	withFastPoll(t)
+	isolateEngine(t)
 	fake := &scriptedCaller{handler: func(cmd string, args map[string]any) (json.RawMessage, error) {
 		switch cmd {
 		case "status":
@@ -103,6 +134,9 @@ func TestStopTakesQueueWithoutStopping(t *testing.T) {
 	}
 	if countCalls(fake.calls, "stop") != 0 {
 		t.Fatalf("没在录音就不该发 stop：%v", fake.calls)
+	}
+	if len(fake.probes) != 1 {
+		t.Fatalf("stop 应当先 _ensure_engine（探一次）：%v", fake.events)
 	}
 	m := out.(map[string]any)
 	if m["text"] != "b" {
@@ -194,9 +228,11 @@ func TestTakePassesThrough(t *testing.T) {
 	}
 }
 
-// status：探不到就回 running:false + note。
+// status：探不到就回 running:false + note；探测走 Probe(timeout=4.0)，
+// 不发 status 命令（对齐 Python voice_pill_status 的 bridge.probe(timeout=4.0)）。
 func TestStatusReportsNotRunning(t *testing.T) {
-	fake := &scriptedCaller{handler: func(cmd string, args map[string]any) (json.RawMessage, error) {
+	isolateEngine(t)
+	fake := &scriptedCaller{probeHandler: func(time.Duration) (json.RawMessage, error) {
 		return nil, errors.New("连不上")
 	}}
 	_, out, err := (&handler{caller: fake}).status(context.Background(), nil, noArgs{})
@@ -206,6 +242,70 @@ func TestStatusReportsNotRunning(t *testing.T) {
 	m := out.(map[string]any)
 	if m["running"] != false || m["note"] != noteNotRunning {
 		t.Fatalf("out = %#v", m)
+	}
+	if len(fake.calls) != 0 {
+		t.Fatalf("status 不该发命令：%v", fake.calls)
+	}
+	if len(fake.probes) != 1 || fake.probes[0] != 4*time.Second {
+		t.Fatalf("status 探测预算 = %v，想要 [4s]", fake.probes)
+	}
+}
+
+// status：探到引擎就把 phase 等字段一起带回来。
+func TestStatusReportsRunning(t *testing.T) {
+	fake := &scriptedCaller{probeHandler: func(time.Duration) (json.RawMessage, error) {
+		return raw(`{"phase":"idle","pid":4242,"backend":"local"}`), nil
+	}}
+	_, out, err := (&handler{caller: fake}).status(context.Background(), nil, noArgs{})
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	m := out.(map[string]any)
+	if m["running"] != true || m["phase"] != "idle" || m["pid"] != float64(4242) {
+		t.Fatalf("out = %#v", m)
+	}
+}
+
+// listen：拉不起引擎时报错、且不把 start 发出去。
+func TestListenEnsureFailureSkipsStart(t *testing.T) {
+	withFastPoll(t)
+	isolateEngine(t)
+	fake := &scriptedCaller{probeHandler: func(time.Duration) (json.RawMessage, error) {
+		return nil, errors.New("连不上")
+	}}
+	_, _, err := (&handler{caller: fake}).listen(context.Background(), nil, listenArgs{Seconds: ptr(30)})
+	if err == nil {
+		t.Fatal("拉不起引擎应当报错")
+	}
+	if countCalls(fake.calls, "start") != 0 {
+		t.Fatalf("引擎没起来就不该 start：%v", fake.calls)
+	}
+}
+
+// prompt_hook 的 take 有 6 秒预算：装死的控制面不能让钩子一直等。
+func TestPromptHookTakeBudget(t *testing.T) {
+	if promptHookTakeTimeout != 6*time.Second {
+		t.Fatalf("promptHookTakeTimeout = %v，想要 6s（对齐 Python _call(\"take\", timeout=6.0)）", promptHookTakeTimeout)
+	}
+	old := promptHookTakeTimeout
+	promptHookTakeTimeout = 30 * time.Millisecond
+	t.Cleanup(func() { promptHookTakeTimeout = old })
+
+	// 装死 5 秒：预算若失效，这个用例 5 秒后带着「用了 5s」判红，而不是挂死。
+	fake := &scriptedCaller{handler: func(cmd string, args map[string]any) (json.RawMessage, error) {
+		time.Sleep(5 * time.Second)
+		return raw(`{"texts":["迟到"]}`), nil
+	}}
+	started := time.Now()
+	_, out, err := (&handler{caller: fake}).promptHook(context.Background(), nil, promptHookArgs{})
+	if err != nil {
+		t.Fatalf("prompt_hook 不该抛：%v", err)
+	}
+	if out.(map[string]any)["continue"] != true {
+		t.Fatalf("out = %#v", out)
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("预算没生效，用了 %v", elapsed)
 	}
 }
 

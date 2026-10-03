@@ -401,6 +401,67 @@ func TestCallUsesPipeNameOverride(t *testing.T) {
 	}
 }
 
+// Probe 走公开入口（PipeName 覆盖），一问一答拿到 status 数据。
+func TestProbeRoundTrip(t *testing.T) {
+	key := useTempKey(t)
+	stub := newStubPipe(t)
+	t.Setenv(JSONPipeNameEnv, stub.name)
+
+	result := make(chan callOutcome, 1)
+	go func() {
+		data, err := NewClient().Probe(3 * time.Second)
+		result <- callOutcome{data: data, err: err}
+	}()
+	conn := stub.accept(t)
+	request := handshake(t, conn, key, stubNonce)
+	if cmd, args, keys := parseRequest(t, request); cmd != "status" || args != "{}" || keys != 2 {
+		t.Fatalf("Probe 的请求行 = %q（cmd=%q args=%s 顶层键=%d）", request, cmd, args, keys)
+	}
+	if err := conn.send(map[string]any{"ok": true, "data": map[string]any{"phase": "idle", "pid": 9}}); err != nil {
+		t.Fatalf("回结果: %v", err)
+	}
+	out := <-result
+	if out.err != nil {
+		t.Fatalf("Probe: %v", out.err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(out.data, &got); err != nil {
+		t.Fatalf("data 不是 JSON：%v（%s）", err, out.data)
+	}
+	if got["phase"] != "idle" || got["pid"] != float64(9) {
+		t.Fatalf("data = %s", out.data)
+	}
+}
+
+// Probe 的时限必须生效：装死的服务端到点就回，不能拖到命令表里的 8 秒。
+func TestProbeHonorsTimeout(t *testing.T) {
+	key := useTempKey(t)
+	stub := newStubPipe(t)
+	t.Setenv(JSONPipeNameEnv, stub.name)
+	const timeout = 500 * time.Millisecond
+
+	result := make(chan callOutcome, 1)
+	go func() {
+		start := time.Now()
+		data, err := NewClient().Probe(timeout)
+		result <- callOutcome{data: data, err: err, elapsed: time.Since(start)}
+	}()
+	conn := stub.accept(t)
+	handshake(t, conn, key, stubNonce) // 吃到请求，然后装死
+	select {
+	case out := <-result:
+		assertBridgeError(t, out.err, stub.name, "没完成")
+		if out.elapsed < timeout/2 {
+			t.Fatalf("不到 %v 就回来了：%v", timeout, out.elapsed)
+		}
+		if out.elapsed > 5*time.Second {
+			t.Fatalf("Probe 没用自己的时限：用了 %v", out.elapsed)
+		}
+	case <-time.After(4 * time.Second):
+		t.Fatal("Probe 的超时没生效（时限没传下去？）")
+	}
+}
+
 // 装死的服务端：超时必须生效且带管道名。把超时值改大这条就红。
 func TestCallTimesOutOnSilentServer(t *testing.T) {
 	key := useTempKey(t)

@@ -16,6 +16,8 @@ import (
 
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"voicepill/internal/engine"
 )
 
 const (
@@ -31,10 +33,20 @@ const transcribeTimeout = 60 * time.Second
 // pollInterval 对齐 Python 版 POLL_INTERVAL；单测里会临时调小。
 var pollInterval = 300 * time.Millisecond
 
+// statusProbeTimeout 对齐 Python 版 voice_pill_status 的 bridge.probe(timeout=4.0)。
+const statusProbeTimeout = 4 * time.Second
+
+// promptHookTakeTimeout 对齐 Python 版 voice_pill_prompt_hook 的
+// _call("take", timeout=6.0)。命令表里 take 是 8 秒（那是给语音工具的余量），
+// 钩子只要 6 秒；单测里会临时调小。
+var promptHookTakeTimeout = 6 * time.Second
+
 // Caller 是控制面客户端在工具层看到的形状。生产实现是 bridge.Client，
 // 单测里换成假实现。
 type Caller interface {
 	Call(cmd string, args map[string]any) (json.RawMessage, error)
+	// Probe 用调用方给的时限探一次 status（引擎没在跑就返回错误）。
+	Probe(timeout time.Duration) (json.RawMessage, error)
 }
 
 // 描述文字：逐字对齐 Python 版 docstring 原文（含换行与缩进）。
@@ -215,6 +227,38 @@ func (h *handler) callMap(cmd string, args map[string]any) (map[string]any, erro
 	if err != nil {
 		return nil, err
 	}
+	return decodeMap(cmd, raw)
+}
+
+// callMapWithin 与 callMap 相同，但给这次调用套上工具自己的截止预算。
+func (h *handler) callMapWithin(cmd string, args map[string]any, timeout time.Duration) (map[string]any, error) {
+	raw, err := callWithin(h.caller, cmd, args, timeout)
+	if err != nil {
+		return nil, err
+	}
+	return decodeMap(cmd, raw)
+}
+
+// probeMap 用 statusProbeTimeout 探一次 status（对齐 Python 的 bridge.probe）。
+func (h *handler) probeMap() (map[string]any, error) {
+	raw, err := h.caller.Probe(statusProbeTimeout)
+	if err != nil {
+		return nil, err
+	}
+	return decodeMap("status", raw)
+}
+
+// ensureEngine 复刻 Python mcp_server._ensure_engine：引擎没在跑就拉起来，
+// 返回拉起后的状态。找不到引擎根/启动器时由 engine.Ensure 给出人话错误。
+func (h *handler) ensureEngine() (map[string]any, error) {
+	raw, err := engine.Ensure(h.caller.Probe, engine.PluginLog)
+	if err != nil {
+		return nil, err
+	}
+	return decodeMap("status", raw)
+}
+
+func decodeMap(cmd string, raw json.RawMessage) (map[string]any, error) {
 	out := map[string]any{}
 	if len(raw) == 0 {
 		return out, nil
@@ -225,8 +269,33 @@ func (h *handler) callMap(cmd string, args map[string]any) (map[string]any, erro
 	return out, nil
 }
 
+// callWithin 给一次控制面调用套上工具自己的截止预算。
+//
+// bridge.Client.Call 的超时来自命令表，工具没有改它的入口；这里本地到点就走。
+// 按规矩不往 bridge 上开「谁都能传超时」的口子，也不反向 import internal/hooks。
+// 真超时后后台那次调用会在命令表时限内自己收尾（关连接即返回）。
+func callWithin(caller Caller, cmd string, args map[string]any, timeout time.Duration) (json.RawMessage, error) {
+	type outcome struct {
+		data json.RawMessage
+		err  error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		data, err := caller.Call(cmd, args)
+		done <- outcome{data, err}
+	}()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case out := <-done:
+		return out.data, out.err
+	case <-timer.C:
+		return nil, errors.New("控制面 " + cmd + " 超过工具预算")
+	}
+}
+
 func (h *handler) status(_ context.Context, _ *mcp.CallToolRequest, _ noArgs) (*mcp.CallToolResult, any, error) {
-	state, err := h.callMap("status", nil)
+	state, err := h.probeMap()
 	if err != nil {
 		return result(map[string]any{"running": false, "note": noteNotRunning})
 	}
@@ -241,6 +310,9 @@ func (h *handler) listen(_ context.Context, _ *mcp.CallToolRequest, in listenArg
 	seconds := 10.0
 	if in.Seconds != nil {
 		seconds = *in.Seconds
+	}
+	if _, err := h.ensureEngine(); err != nil {
+		return nil, nil, err
 	}
 	if _, err := h.callMap("start", nil); err != nil {
 		return nil, nil, err
@@ -269,7 +341,8 @@ func (h *handler) listen(_ context.Context, _ *mcp.CallToolRequest, in listenArg
 }
 
 func (h *handler) stop(_ context.Context, _ *mcp.CallToolRequest, _ noArgs) (*mcp.CallToolResult, any, error) {
-	state, err := h.callMap("status", nil)
+	// Python 版这里用的是 _ensure_engine() 的返回值判 phase。
+	state, err := h.ensureEngine()
 	if err != nil {
 		return nil, nil, err
 	}
@@ -320,7 +393,7 @@ func (h *handler) shutup(_ context.Context, _ *mcp.CallToolRequest, _ noArgs) (*
 }
 
 func (h *handler) promptHook(_ context.Context, _ *mcp.CallToolRequest, _ promptHookArgs) (*mcp.CallToolResult, any, error) {
-	taken, err := h.callMap("take", nil)
+	taken, err := h.callMapWithin("take", nil, promptHookTakeTimeout)
 	if err != nil {
 		// 钩子绝不能因为引擎没开就拦住用户的这一轮对话。
 		return result(map[string]any{"continue": true})

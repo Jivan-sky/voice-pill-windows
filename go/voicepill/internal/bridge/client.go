@@ -168,6 +168,15 @@ func (c *Client) Call(cmd string, args map[string]any) (json.RawMessage, error) 
 	return call(PipeName(), cmd, args, timeout)
 }
 
+// Probe 用调用方给的时限探一次 status：连不上 / 超时 / 对端报错都返回错误。
+//
+// 对齐 Python 侧 src/bridge.py 的 probe()：那里连不上返回 None，Go 里用非 nil
+// 错误表达同一件事，调用方据此判断「引擎没在跑」。internal/tools 的
+// voice_pill_status 与 _ensure_engine 的轮询都走它。
+func (c *Client) Probe(timeout time.Duration) (json.RawMessage, error) {
+	return call(PipeName(), "status", nil, timeout)
+}
+
 // call 把「连接 + 握手 + 一问一答」整体放进一个 goroutine，超时就把连接
 // 关掉（Windows 上关句柄会打断阻塞的 ReadFile），返回人话错误。
 func call(pipe string, cmd string, args map[string]any, timeout time.Duration) (json.RawMessage, error) {
