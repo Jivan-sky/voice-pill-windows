@@ -59,6 +59,7 @@ import audio as audio_mod
 import bridge
 import config
 import delivery
+import capture
 import hotkey
 import paste as paste_mod
 import providers
@@ -381,7 +382,15 @@ class VoicePill:
             # 也宁可让它在队列里等一次取用，而不是悄悄丢掉。
             with self._lock:
                 self._pending.append((time.time(), text))
-        if self.settings.auto_paste and text:
+        captured = False
+        if text and self.settings.capture_enabled and self.settings.capture_dir:
+            hit, body = capture.parse(text, self.settings.capture_prefixes)
+            if hit:
+                captured = self._capture(body)
+
+        if captured:
+            pass                        # 已落库：不粘贴、也不打印
+        elif self.settings.auto_paste and text:
             try:
                 paste_mod.paste(text, self._target_hwnd)
             except paste_mod.PasteError as exc:
@@ -410,6 +419,27 @@ class VoicePill:
         self._remove_wav()
         self._remove_log()
         self._finish_delivery(gen)
+
+    def _capture(self, body: str) -> bool:
+        """把这次口述落进 Inbox。成功 True；失败 False，且**绝不抛** ——
+        调用方接着要走交付收尾（删 WAV、复位状态），不能在这里中断。
+        失败时调用方会退回普通粘贴，所以字不会丢。
+        """
+        try:
+            path = capture.write(self.settings.capture_dir, body)
+        except Exception as exc:        # noqa: BLE001 —— 兜底就是要宽
+            traceback.print_exc()
+            print("[落库失败] %s\n       改走普通粘贴，文字不会丢" % exc,
+                  file=sys.stderr)
+            if self.settings.hud_enabled:
+                self.hud.set_text("落库失败，已改粘贴")
+                threading.Timer(2.5, self.hud.hide).start()
+            return False
+        print("[已落 Inbox] %s" % path)
+        if self.settings.hud_enabled:
+            self.hud.set_text("已落 Inbox")
+            threading.Timer(2.5, self.hud.hide).start()
+        return True
 
     # ---------- 杂项 ----------
 
@@ -699,6 +729,12 @@ class VoicePill:
         if new.hud_enabled != old.hud_enabled:
             # 悬浮条的 tk 线程起停不方便中途切换，如实说明，不假装生效
             changes.append("悬浮条 → %s（需重启生效）" % new.hud_enabled)
+        if (new.capture_enabled, new.capture_dir,
+                tuple(new.capture_prefixes or ())) != \
+                (old.capture_enabled, old.capture_dir,
+                 tuple(old.capture_prefixes or ())):
+            changes.append("口述落库 → %s" % (
+                "开" if new.capture_enabled and new.capture_dir else "关"))
 
         self.settings = new
         # 护栏的下一次武装用新值；已经在录的那次不改变时长
@@ -835,6 +871,13 @@ def run_check(settings: config.Settings) -> int:
     print("  最长录音  ：%s 秒（0 = 不限）" % settings.max_record_seconds)
     print("  留存天数  ：%s（0 = 不清理）" % settings.retention_days)
     print("  保鲜期    ：%s 分钟（0 = 不过期）" % settings.pending_ttl_minutes)
+    if settings.capture_enabled and settings.capture_dir:
+        print("  口述落库  ：✅ → %s（口令：%s）"
+              % (settings.capture_dir, " / ".join(settings.capture_prefixes)))
+    elif settings.capture_enabled:
+        print("  口述落库  ：⚠️  开着，但 capture_dir 是空的——落库不会生效")
+    else:
+        print("  口述落库  ：关（settings.json 里配 capture_dir 即可开）")
 
     print("\n[常驻]")
     probe = single_instance.InstanceLock()
