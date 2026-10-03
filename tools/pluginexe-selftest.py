@@ -119,6 +119,7 @@ class FakeEngine:
         self.phase = "idle"
         self.take_texts: list = []
         self.recording_left = None          # start 之后还能回几次 recording
+        self.speak_reply = None             # 非 None 就照它回（例如开关关着的形状）
         self._server = bridge.JsonBridgeServer(self._handler)
 
     def start(self) -> "FakeEngine":
@@ -168,6 +169,8 @@ class FakeEngine:
             self.recording_left = 1
             return {"pid": PID, "phase": self.phase}
         if cmd == "speak":
+            if self.speak_reply is not None:
+                return self.speak_reply
             return {"pid": PID, "phase": "speaking",
                     "text": args.get("text"), "auto": args.get("auto")}
         if cmd in ("stop", "cancel"):
@@ -464,6 +467,19 @@ def check_hooks_stop(ck: Checker, engine: FakeEngine, env: dict) -> None:
            and len(speaks[0].get("text", "")) == 4000, speaks)
         ck("stop(%s)：截断按字符（前 4000 个）" % label,
            bool(speaks) and speaks[0].get("text") == message[:4000], "")
+
+    # 开关关着时引擎回 skipped：钩子照样恒一行放行、不许报错（摘掉 speak_replies=false 那半条）。
+    engine.reset(phase="idle", recording_left=None, take_texts=[],
+                 speak_reply={"spoken": "", "chars": 0,
+                              "skipped": "speak_replies=false"})
+    code, out, err = run_hook(env, "stop",
+                              json.dumps({"last_assistant_message": "关着开关也要放行",
+                                          "session_id": "s1"}))
+    lines = out.decode("utf-8", "replace").splitlines()
+    ck("stop(开关关着)：退出码 0", code == 0, err.decode("utf-8", "replace"))
+    ck("stop(开关关着)：stdout 恰好一行合法 JSON 且 continue",
+       len(lines) == 1 and json.loads(lines[0]) == {"continue": True}, lines)
+    engine.reset(speak_reply=None)
 
 
 def check_engine_absent(ck: Checker, client: MCPClient, engine: FakeEngine) -> None:
