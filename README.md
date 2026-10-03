@@ -2,12 +2,6 @@
 
 Voice Pill 的 Windows 移植工程。按住热键说话，松手把文字粘到光标处。
 
-| 项 | 值 |
-|---|---|
-| 上游（原版 macOS） | https://github.com/HA7CH/voice-pill · 0.2.3 · MIT |
-| 上游本地克隆 | `D:\FDE_HA7CH\voice-pill`（**只读参考，本工程不改动它**） |
-| 本工程 | `D:\Own_tools&skills\voice-pill-windows` |
-
 ## 一句话思路
 
 **内核照搬，外壳重写。** ASR 引擎是独立 CLI 子进程（stdin 灌裸 PCM / stdout 出 NDJSON），跨平台可交叉编译；macOS 专属的采音、热键、粘贴、悬浮窗全部重做。
