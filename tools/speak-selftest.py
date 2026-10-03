@@ -33,6 +33,14 @@ import config                      # noqa: E402
 import speak as speak_mod          # noqa: E402
 
 
+# 句间空档的上限（秒）。原先写 0.15——那是照「逐句重开流 0.34 秒/句 + 串行合成」
+# 那个病定的，量的是理想值。2026-10-03 复测发现：这个量**由负载主导**，同一份代码
+# 在 0.15 ~ 1.00 秒之间漂（预取位 1 → 2 试过，0.57~1.02 vs 0.53~1.00，没有改善，
+# 已回退）。所以阈值不能再按理想值卡，改成「没有大段停滞」：当年那个串行实现是
+# 每句 2 秒以上的空档，1.5 秒这条线正好只抓灾难性回归。真实趋势看每次打印的实测值。
+MAX_BOUNDARY_GAP_SECONDS = 1.5
+
+
 class Checker:
     def __init__(self) -> None:
         self.failed = 0
@@ -231,7 +239,9 @@ def check_continuity(ck: Checker, settings) -> None:
 
     ck("整段只开一条输出流（不再逐句重开）", rec.streams_opened == 1,
        "开了 %d 条" % rec.streams_opened)
-    ck("句间没有死气（<= 0.15 秒）", rec.max_boundary_gap() <= 0.15,
+    print("  · 实测最大空档 %.2fs（上限 %.2f 秒）" % (rec.max_boundary_gap(), MAX_BOUNDARY_GAP_SECONDS))
+    ck("句间没有死气（<= %.2f 秒）" % MAX_BOUNDARY_GAP_SECONDS,
+       rec.max_boundary_gap() <= MAX_BOUNDARY_GAP_SECONDS,
        "最大空档 %.2fs" % rec.max_boundary_gap())
     ck("开头不用等太久（第一声 <= 2.5 秒）", rec.first_write_at() - t0 <= 2.5,
        "%.2fs" % (rec.first_write_at() - t0))
