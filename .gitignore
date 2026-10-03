@@ -1,4 +1,4 @@
-﻿# 虚拟环境与依赖
+# 虚拟环境与依赖
 .venv/
 venv/
 
@@ -15,3 +15,8 @@ tmp/
 .idea/
 Thumbs.db
 Desktop.ini
+
+# 插件安装时渲染出来的机器路径与构建产物（仓库里只留 *.template）
+plugins/voice-pill/.mcp.json
+plugins/voice-pill/hooks/hooks.json
+plugins/voice-pill/voicepill.exe

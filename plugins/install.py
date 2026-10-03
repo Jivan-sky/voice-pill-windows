@@ -161,6 +161,27 @@ def _pip_install(py: Path) -> None:
         _run([str(py), "-m", "pip", "install", "mcp"])
 
 
+def _is_ignored(path):
+    """渲染产物必须被 .gitignore 挡住，否则机器路径会被 git add 回仓库。
+
+    返回 True / False；问不到 git（没装、或不在仓库里）返回 None——那不是
+    「没被忽略」而是「没法判断」，而那种情况下也没有 git add 的风险。
+    `git check-ignore -q`：0=被忽略，1=没被忽略，其它=出错。
+    """
+    try:
+        rc = subprocess.run(["git", "check-ignore", "-q", str(path)],
+                            cwd=str(REPO_ROOT),
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL).returncode
+    except OSError:
+        return None
+    if rc == 0:
+        return True
+    if rc == 1:
+        return False
+    return None
+
+
 def render_files(check: bool) -> bool:
     """把两处机器相关的路径写进插件。内容对得上就一个字都不改（免得脏工作区）。"""
     mcp_json = {
@@ -206,6 +227,14 @@ def render_files(check: bool) -> bool:
     ok = True
     for path, payload in ((PLUGIN_DIR / ".mcp.json", mcp_json),
                           (PLUGIN_DIR / "hooks" / "hooks.json", hooks_json)):
+        ignored = _is_ignored(path)
+        if ignored is False:
+            say(False, "渲染产物没被 git 忽略，拒绝往仓库里写机器路径", str(path))
+            print("      .gitignore 里应该有：%s" % path.relative_to(REPO_ROOT))
+            ok = False
+            continue
+        if ignored is None:
+            print("      问不到 git，「产物是否被忽略」这一道跳过（没装 git？）")
         text = json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
         if path.is_file() and path.read_text(encoding="utf-8") == text:
             say(True, "路径已是最新", path.name)

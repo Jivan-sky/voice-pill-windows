@@ -1,11 +1,9 @@
 {
   "mcpServers": {
     "voice_pill": {
-      "command": "C:/Users/sjw/AppData/Local/VoicePill/plugin-venv/Scripts/python.exe",
-      "args": [
-        "C:/Users/sjw/plugins/voice-pill/mcp_server.py"
-      ],
-      "cwd": "C:/Users/sjw/plugins/voice-pill",
+      "command": "<PLUGIN_DIR>/voicepill.exe",
+      "args": [],
+      "cwd": "<PLUGIN_DIR>",
       "env_vars": [
         "PATH",
         "USERPROFILE",

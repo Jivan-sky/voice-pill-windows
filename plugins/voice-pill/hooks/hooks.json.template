@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "C:\\Users\\sjw\\plugins\\voice-pill\\hook-session-start.cmd",
+            "command": "<PLUGIN_DIR>\\hook-session-start.cmd",
             "timeout": 20
           }
         ]
@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "C:\\Users\\sjw\\plugins\\voice-pill\\hook.cmd",
+            "command": "<PLUGIN_DIR>\\hook.cmd",
             "timeout": 10
           }
         ]
@@ -27,7 +27,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "C:\\Users\\sjw\\plugins\\voice-pill\\hook-stop.cmd",
+            "command": "<PLUGIN_DIR>\\hook-stop.cmd",
             "timeout": 5
           }
         ]
