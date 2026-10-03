@@ -167,7 +167,7 @@ class HotkeyManager:
     def alive(self) -> bool:
         """钩子当前是否还在岗。装失败过、或消息循环退出了，都为 False。"""
         thread = self._hook_thread
-        return bool(self._hook_installed and self._hook is not None
+        return bool(self.hook_installed and self._hook is not None
                     and thread is not None and thread.is_alive())
 
     def restart(self) -> None:
@@ -182,8 +182,8 @@ class HotkeyManager:
         self._queue = queue.Queue()
         self._thread_id = 0
         self._hook = None
-        self._hook_installed = False
-        self._hook_error = 0
+        self.hook_installed = False
+        self.hook_error = 0
         self._proc_ref = None
         self._hook_thread = None
         self._worker = None
