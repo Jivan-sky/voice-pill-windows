@@ -1,25 +1,38 @@
 # -*- coding: utf-8 -*-
-"""把本仓库里的 Codex 插件接到本机：建目录联接、铺 venv、写机器相关路径、装进 Codex。
+"""把本仓库里的 Codex 插件接到本机：建目录联接、放置 exe、渲染配置、装进 Codex。
 
 为什么要这么一个脚本
 --------------------
 插件里有几处**只能是绝对路径**：Codex 会把插件整包拷进自己的 cache，相对路径在
 那边解析不了（实测 `.mcp.json` 里写相对 command 直接报 os error 3）。涉及的是
 
-    .mcp.json        command（venv 里的 python.exe）、args（mcp_server.py 的位置）
-    hooks/hooks.json command（hook.cmd 的位置）
+    .mcp.json        command / cwd（插件目录里的 voicepill.exe）
+    hooks/hooks.json command（三个 hook-*.cmd 的位置）
 
-而这些路径**又必须不含 `&`**：实测路径里带 `&`（比如本仓库所在的
-`D:\\Own_tools&skills\\...`）时，未加引号会被 cmd 当命令分隔符拆断、钩子报 Failed；
-加了引号 Codex 只回一句 Completed，脚本根本没被执行——两种都是坏的。
+而这些路径**又必须不含 `&`**：实测仓库路径里带 `&` 时，未加引号会被 cmd 当命令
+分隔符拆断、钩子报 Failed；加了引号 Codex 只回一句 Completed，脚本根本没被执行
+——两种都是坏的。所以本仓库路径里的 `&` 一个都不许出现在钩子命令里。
 
-所以插件在 Codex 眼里固定住在 `%USERPROFILE%\\plugins\\voice-pill`，这个目录是一个
+于是插件在 Codex 眼里固定住在 `%USERPROFILE%\\plugins\\voice-pill`，这个目录是一个
 **目录联接（junction）**，指向本仓库的 `plugins/voice-pill`：
 
     Codex ──> ~/plugins/voice-pill ──(junction)──> <仓库>/plugins/voice-pill
 
 仓库是唯一源码；Codex 看到的路径里没有 `&`；个人市场清单沿用官方默认写法
 （`./plugins/<名字>`），一个字都不用改。
+
+仓库里只留模板
+--------------
+`.mcp.json` 与 `hooks/hooks.json` 是**渲染产物**：里面是本机绝对路径，所以被
+`.gitignore` 挡住、不进仓库。仓库里对应留 `.mcp.json.template` 与
+`hooks/hooks.json.template`，占位符 `<PLUGIN_DIR>` 在安装时替换成上面的联接路径。
+写产物之前先 `git check-ignore` 确认它真的被忽略，否则拒绝落盘。
+
+引擎根
+------
+exe 按「环境变量 → 自解析 → `%LOCALAPPDATA%\\VoicePill\\engine.json`」三级找仓库根
+（见 `go/voicepill/internal/engine`）。自解析看的是 exe 自己的真实路径，摆在联接
+目录里时就能中；engine.json 是「exe 被挪走 / 经联接解析不出」时的兜底，由本脚本写。
 
 用法
 ----
@@ -40,7 +53,6 @@ from pathlib import Path
 
 PLUGIN_NAME = "voice-pill"
 MARKETPLACE_NAME = "personal"
-VENV_DIRNAME = "plugin-venv"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -52,8 +64,13 @@ console.make_output_safe()
 PLUGIN_DIR = REPO_ROOT / "plugins" / PLUGIN_NAME
 LINK_PATH = Path.home() / "plugins" / PLUGIN_NAME
 APP_DIR = Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "VoicePill"
-VENV_DIR = APP_DIR / VENV_DIRNAME
 MARKETPLACE_PATH = Path.home() / ".agents" / "plugins" / "marketplace.json"
+
+# exe 的出处与去处。去处经目录联接就是 Codex 看到的 ~/plugins/voice-pill/voicepill.exe。
+EXE_SRC = REPO_ROOT / "bin" / "voicepill.exe"
+EXE_DST = PLUGIN_DIR / "voicepill.exe"
+# exe 找仓库根的第三级兜底（前两级是环境变量与自解析）。
+ENGINE_JSON = APP_DIR / "engine.json"
 
 MARKETPLACE_ENTRY = {
     "name": PLUGIN_NAME,
@@ -105,32 +122,43 @@ def ensure_junction(check: bool) -> bool:
     return True
 
 
-def venv_python() -> Path:
-    return VENV_DIR / "Scripts" / "python.exe"
-
-
-def ensure_venv(check: bool) -> bool:
-    py = venv_python()
-    if py.is_file():
-        if _has_mcp(py):
-            say(True, "插件 venv 可用", str(py))
-            return True
-        if check:
-            say(False, "venv 里没有 mcp 包", str(py))
-            return False
-        _pip_install(py)
-        return _has_mcp(py)
-    if check:
-        say(False, "还没有插件 venv", str(VENV_DIR))
+def place_exe(check: bool) -> bool:
+    """把 bin\\voicepill.exe 摆到插件目录。经联接就是 Codex 看到的那一份。"""
+    if not EXE_SRC.is_file():
+        say(False, "还没有 exe", str(EXE_SRC))
+        print("      先跑 tools\\build-plugin-exe.ps1 编一份。")
         return False
-    VENV_DIR.parent.mkdir(parents=True, exist_ok=True)
-    if shutil.which("uv"):
-        _run(["uv", "venv", "--python", "3.11", str(VENV_DIR)])
-    else:
-        _run([sys.executable, "-m", "venv", str(VENV_DIR)])
-    say(True, "建好 venv", str(VENV_DIR))
-    _pip_install(py)
-    return _has_mcp(py)
+    if EXE_DST.is_file() and _same_bytes(EXE_SRC, EXE_DST):
+        say(True, "exe 已就位", str(EXE_DST))
+        return True
+    if check:
+        say(False, "需要放置 exe", str(EXE_DST))
+        return False
+    EXE_DST.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(EXE_SRC, EXE_DST)
+    say(True, "放好 exe", str(EXE_DST))
+    return True
+
+
+def _same_bytes(a: Path, b: Path) -> bool:
+    if a.stat().st_size != b.stat().st_size:
+        return False
+    return a.read_bytes() == b.read_bytes()
+
+
+def engine_json(check: bool) -> bool:
+    """写机器侧的引擎根纸条：{"root": "<仓库根>"}。跟 settings.json、bridge.key 同处。"""
+    text = json.dumps({"root": str(REPO_ROOT)}, ensure_ascii=False) + "\n"
+    if ENGINE_JSON.is_file() and ENGINE_JSON.read_text(encoding="utf-8") == text:
+        say(True, "引擎根纸条已是最新", str(ENGINE_JSON))
+        return True
+    if check:
+        say(False, "引擎根纸条需要重写", str(ENGINE_JSON))
+        return False
+    ENGINE_JSON.parent.mkdir(parents=True, exist_ok=True)
+    ENGINE_JSON.write_text(text, encoding="utf-8")
+    say(True, "写好引擎根纸条", str(ENGINE_JSON))
+    return True
 
 
 def _run(argv: list) -> int:
@@ -140,25 +168,6 @@ def _run(argv: list) -> int:
     except OSError as exc:
         print("      起不来：%s" % exc)
         return 1
-
-
-def _has_mcp(py: Path) -> bool:
-    try:
-        return subprocess.call([str(py), "-c", "import mcp"],
-                               stdout=subprocess.DEVNULL,
-                               stderr=subprocess.DEVNULL) == 0
-    except OSError:
-        return False
-
-
-def _pip_install(py: Path) -> None:
-    """装 mcp。国内网络下拉不动 PyPI 时，自己给个镜像：
-    uv pip install --python <venv> --index-url https://pypi.tuna.tsinghua.edu.cn/simple mcp
-    """
-    if shutil.which("uv"):
-        _run(["uv", "pip", "install", "--python", str(py), "mcp"])
-    else:
-        _run([str(py), "-m", "pip", "install", "mcp"])
 
 
 def _is_ignored(path):
@@ -182,51 +191,40 @@ def _is_ignored(path):
     return None
 
 
+def _slash(path: Path) -> str:
+    return str(path).replace("\\", "/")
+
+
+def _json_native(path: Path) -> str:
+    """往 JSON 字符串里塞本机路径时，反斜杠还得再转义一层（否则 \\U 是非法转义）。"""
+    return str(path).replace("\\", "\\\\")
+
+
+# 模板 -> 产物 -> 占位符替换成哪种形式。
+#   .mcp.json    一直用正斜杠（Codex 侧历来如此）
+#   hooks.json   一直用反斜杠（既有产物逐字如此；cmd 执行 .cmd 时也最保底）
+# 两者都是**已在本机跑通的形态**，这里只是把当时的写法固化下来，不借机换风格。
+PRODUCTS = (
+    (PLUGIN_DIR / ".mcp.json.template", PLUGIN_DIR / ".mcp.json", _slash),
+    (PLUGIN_DIR / "hooks" / "hooks.json.template",
+     PLUGIN_DIR / "hooks" / "hooks.json", _json_native),
+)
+
+
 def render_files(check: bool) -> bool:
-    """把两处机器相关的路径写进插件。内容对得上就一个字都不改（免得脏工作区）。"""
-    mcp_json = {
-        "mcpServers": {
-            "voice_pill": {
-                "command": _slash(venv_python()),
-                "args": [_slash(LINK_PATH / "mcp_server.py")],
-                "cwd": _slash(LINK_PATH),
-                "env_vars": ["PATH", "USERPROFILE", "LOCALAPPDATA", "APPDATA",
-                             "TEMP", "TMP", "SYSTEMROOT"],
-                "startup_timeout_sec": 20,
-                "tool_timeout_sec": 180,
-            }
-        }
-    }
-    # 三个钩子：
-    #   SessionStart     —— Codex 一开就把驻留实例拉起来，并把它的命绑在
-    #                       Codex 上（见 hook_session_start.py / src/anchor.py）
-    #   UserPromptSubmit —— 你说的字**进**对话（说话 → 上下文）
-    #   Stop             —— 助手的回复**出**声（回复 → 本机 TTS）
-    # 都必须写绝对路径：Codex 从别的工作目录拉起钩子，相对路径解析不到。
-    # SessionStart 超时给得宽：冷启动时要等引擎把控制面架起来（最多 3 秒），
-    # 已经在跑时毫秒级返回。
-    hooks_json = {
-        "hooks": {
-            "SessionStart": [
-                {"hooks": [{"type": "command",
-                            "command": str(LINK_PATH / "hook-session-start.cmd"),
-                            "timeout": 20}]}
-            ],
-            "UserPromptSubmit": [
-                {"hooks": [{"type": "command",
-                            "command": str(LINK_PATH / "hook.cmd"),
-                            "timeout": 10}]}
-            ],
-            "Stop": [
-                {"hooks": [{"type": "command",
-                            "command": str(LINK_PATH / "hook-stop.cmd"),
-                            "timeout": 5}]}
-            ],
-        }
-    }
+    """按模板渲染出机器相关的那两处路径。内容对得上就一个字都不改（免得脏工作区）。
+
+    产物是**仓库里的文件**（经目录联接就是 Codex 读的那份），所以落盘之前先确认
+    它被 .gitignore 挡住，免得哪天机器路径又被 git add 回仓库。
+    """
     ok = True
-    for path, payload in ((PLUGIN_DIR / ".mcp.json", mcp_json),
-                          (PLUGIN_DIR / "hooks" / "hooks.json", hooks_json)):
+    for template, path, render in PRODUCTS:
+        if not template.is_file():
+            say(False, "缺模板", str(template))
+            ok = False
+            continue
+        text = template.read_text(encoding="utf-8").replace(
+            "<PLUGIN_DIR>", render(LINK_PATH))
         ignored = _is_ignored(path)
         if ignored is False:
             say(False, "渲染产物没被 git 忽略，拒绝往仓库里写机器路径", str(path))
@@ -235,7 +233,6 @@ def render_files(check: bool) -> bool:
             continue
         if ignored is None:
             print("      问不到 git，「产物是否被忽略」这一道跳过（没装 git？）")
-        text = json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
         if path.is_file() and path.read_text(encoding="utf-8") == text:
             say(True, "路径已是最新", path.name)
             continue
@@ -295,10 +292,6 @@ def install_into_codex(check: bool) -> bool:
     return rc == 0
 
 
-def _slash(path: Path) -> str:
-    return str(path).replace("\\", "/")
-
-
 def main() -> int:
     ap = argparse.ArgumentParser(description="把本仓库的 Codex 插件接到本机")
     ap.add_argument("--check", action="store_true", help="只看现状，什么都不动")
@@ -311,8 +304,9 @@ def main() -> int:
     print("  Codex 侧：%s" % LINK_PATH)
 
     ok = ensure_junction(args.check)
-    ok = ensure_venv(args.check) and ok
+    ok = place_exe(args.check) and ok
     ok = render_files(args.check) and ok
+    ok = engine_json(args.check) and ok
     ok = ensure_marketplace(args.check) and ok
     ok = install_into_codex(args.check) and ok
 
