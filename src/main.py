@@ -86,7 +86,10 @@ MIN_CAPTURE_SECONDS = 0.10
 # 主循环的定期体检间隔（秒）。主循环本身 0.5 秒转一圈，见 VoicePill._tick。
 HOOK_CHECK_SECONDS = 30.0        # 热键钩子还在不在
 SETTINGS_CHECK_SECONDS = 2.0     # settings.json 有没有被改
-MAINTENANCE_SECONDS = 6 * 3600.0  # 清一次过期留存
+# 清一次过期留存。留存窗口是分钟级的（见 config.RETENTION_MINUTES），扫描周期
+# 必须比它短得多，否则「3 分钟后删」会被拖到下一次扫描；开销只是两个目录各
+# listdir 一次，1 分钟一扫可以忽略。
+MAINTENANCE_SECONDS = 60.0
 
 # 控制面 `take` 一次能取走的转写条数上限。取走语义 + 有界队列：用户说过的
 # 话不会在内存里无限堆着，插件那侧也不会一次收到一大串。
@@ -609,7 +612,7 @@ class VoicePill:
         这些 `rec-*.log` 是引擎 stderr 的留存，只有**失败**时才有人看
         （live_session 的 _read_log_tail 就是读它）。成功还留着，就是每次
         录音留一个文件、永不清理——实测这类文件在真实使用里攒得飞快。
-        失败的走另一条路：保留，由 config.prune_data 按天清。
+        失败的走另一条路：保留，由 config.prune_data 按分钟清。
         """
         if self._log_path and os.path.isfile(self._log_path):
             try:
@@ -796,8 +799,8 @@ class VoicePill:
             changes.append("豆包标点 → %s" % new.doubao_punctuation)
         if new.max_record_seconds != old.max_record_seconds:
             changes.append("最长录音 → %s 秒" % new.max_record_seconds)
-        if new.retention_days != old.retention_days:
-            changes.append("留存天数 → %s" % new.retention_days)
+        if new.retention_minutes != old.retention_minutes:
+            changes.append("留存分钟 → %s" % new.retention_minutes)
         if new.pending_ttl_minutes != old.pending_ttl_minutes:
             changes.append("待取保鲜期 → %s 分钟" % new.pending_ttl_minutes)
         if new.local_model_dir != old.local_model_dir:
@@ -822,13 +825,13 @@ class VoicePill:
 
     def _run_maintenance(self) -> None:
         try:
-            gone = config.prune_data(self.settings.retention_days)
+            gone = config.prune_data(self.settings.retention_minutes)
         except Exception as exc:
             print("[清理] 出错：%r" % (exc,), file=sys.stderr)
             return
         if gone:
-            print("[清理] 删掉 %d 个过期文件（保留 %s 天）。"
-                  % (len(gone), self.settings.retention_days))
+            print("[清理] 删掉 %d 个过期文件（保留 %s 分钟）。"
+                  % (len(gone), self.settings.retention_minutes))
 
     def _shutdown(self) -> None:
         """要求进程退出。**可从任意线程调用**。
@@ -946,7 +949,7 @@ def run_check(settings: config.Settings) -> int:
                                      hotkey.describe_primary(settings.primary_spec)))
     print("  自动粘贴  ：%s" % settings.auto_paste)
     print("  最长录音  ：%s 秒（0 = 不限）" % settings.max_record_seconds)
-    print("  留存天数  ：%s（0 = 不清理）" % settings.retention_days)
+    print("  留存分钟  ：%s（0 = 不清理）" % settings.retention_minutes)
     print("  保鲜期    ：%s 分钟（0 = 不过期）" % settings.pending_ttl_minutes)
     if settings.capture_enabled and settings.capture_dir:
         print("  口述落库  ：✅ → %s（口令：%s）"

@@ -18,8 +18,11 @@ APP_DIR_NAME = "VoicePill"
 
 LONG_PRESS_MS = 180
 
-# 留存录音与日志的默认保留天数。见 prune_data()。
-RETENTION_DAYS = 7
+# 失败录音与转写日志的默认保留时长（分钟）。见 prune_data()。
+# 为什么是分钟级：说的字一旦转成文字，内容就落到文字层面了，录音本身只剩
+# 「刚那一次失败长什么样」这点临时价值——3 分钟够看一眼，再留就只是隐私代价
+# （成功的那次根本不落盘，见 main.VoicePill._remove_wav）。
+RETENTION_MINUTES = 3
 
 # 单次录音的默认上限（秒）。0 = 不限。见 main.RecordWatchdog 的注释。
 MAX_RECORD_SECONDS = 120
@@ -65,7 +68,7 @@ def app_dir() -> str:
 
 
 def recordings_dir() -> str:
-    """失败录音留存目录（跨重启保留，供 Retry）。"""
+    """失败录音的暂存目录（跨重启保留；只留 RETENTION_MINUTES 分钟）。"""
     path = os.path.join(app_dir(), "recordings")
     os.makedirs(path, exist_ok=True)
     return path
@@ -87,7 +90,7 @@ def app_log_path() -> str:
     return os.path.join(logs_dir(), "app.log")
 
 
-def prune_data(days: int = RETENTION_DAYS) -> list:
+def prune_data(minutes: int = RETENTION_MINUTES) -> list:
     """清掉过期的失败录音与实时转写日志，返回被删的路径。
 
     为什么需要：失败录音和 `rec-*.log` 都是**只增不减**的。真实使用里
@@ -95,11 +98,11 @@ def prune_data(days: int = RETENTION_DAYS) -> list:
     是用户自己的说话内容，留着没有价值、只有隐私代价。
 
     只碰 `rec-*`，不碰 app.log —— 后者是进程当前正打开的账本。
-    `days <= 0` 表示不要自动清理，交给用户自己管。
+    `minutes <= 0` 表示不要自动清理，交给用户自己管。
     """
-    if days <= 0:
+    if minutes <= 0:
         return []
-    cutoff = time.time() - days * 86400.0
+    cutoff = time.time() - minutes * 60.0
     removed = []
     for folder in (recordings_dir(), logs_dir()):
         try:
@@ -222,7 +225,7 @@ class Settings:
     local_model_dir: str = ""         # 本地离线引擎的模型目录，见 config.local_model_dir()
     max_record_seconds: int = MAX_RECORD_SECONDS   # 单次录音上限（秒），0 = 不限
     pending_ttl_minutes: int = PENDING_TTL_MINUTES  # 待取文字的保鲜期（分钟），0 = 不过期
-    retention_days: int = RETENTION_DAYS           # 留存数据保留天数，0 = 不清理
+    retention_minutes: int = RETENTION_MINUTES     # 留存数据保留分钟数，0 = 不清理
     # ---- 发声（离线 TTS，见 speak.py 与 docs/移植方案.md 第 16 节）----
     tts_model_dir: str = ""            # 留空 = 跟 ASR 模型并排
     tts_speaker: int = 9               # 音色 id（Kokoro sid）
