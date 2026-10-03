@@ -753,10 +753,20 @@ def status_line() -> str:
     return "✅ 在听（pid %s，%s）" % (data.get("pid"), data.get("phase"))
 
 
+# 这一行是**诊断**用的，所以连接上限故意比 json_call 的默认
+# （3.0 秒）短：引擎活着时握手是毫秒级，1 秒绰绰有余；而引擎不在
+# 时要你为「看看到底怎么了」白等 3 秒——而引擎不在正是最常跑
+# `--check` 的时候。旧的 status_line() 对不存在的管道是立刻抛（0.00 秒）
+# ——新这行不该比它慢一个数量级。
+#
+# 有意偏差：计划第 318 行写的是 timeout=3.0；这里改用 1.0（诊断行要快）。
+JSON_STATUS_TIMEOUT_SECONDS = 1.0
+
+
 def json_status_line() -> str:
     """给 `--check` 用的一行人话（NDJSON 通道那条）。与 status_line() 同口径。"""
     try:
-        data = json_call("status", timeout=3.0)
+        data = json_call("status", timeout=JSON_STATUS_TIMEOUT_SECONDS)
     except BridgeError:
         return "连不上（驻留进程没在跑，或它还没挂上这条口子）"
     if not isinstance(data, dict):
