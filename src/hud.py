@@ -57,6 +57,7 @@ user32.SetWindowPos.restype = wintypes.BOOL
 class _Cmd:
     kind: str            # "show" | "hide" | "text" | "phase" | "quit"
     text: str = ""
+    hint: str = ""
 
 
 class HudWindow:
@@ -73,8 +74,9 @@ class HudWindow:
     def start(self) -> None:
         self._thread.start()
 
-    def show(self, text: str = "") -> None:
-        self._q.put(_Cmd("show", text))
+    def show(self, text: str = "", hint: str = "正在聆听…") -> None:
+        """显示字幕条。hint 是下方次要行（默认沿用原版「正在聆听…」）。"""
+        self._q.put(_Cmd("show", text, hint))
 
     def hide(self) -> None:
         self._q.put(_Cmd("hide"))
@@ -153,7 +155,7 @@ class HudWindow:
 
         if cmd.kind == "show":
             self._label.config(text=self._clip(cmd.text))
-            self._hint.config(text="正在聆听…")
+            self._hint.config(text=cmd.hint or "正在聆听…")
             self._reposition()
             self._win.deiconify()
             self._win.lift()

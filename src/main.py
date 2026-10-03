@@ -186,6 +186,7 @@ class VoicePill:
         # 与 ASR 无关，所以口令被听歪也不影响这条路；只对下一次口述有效。
         self._capture_armed = False
         self._last_quick_tap = 0.0
+        self._hud_timer: Optional[threading.Timer] = None
 
         # 常驻形态的定期杂务（见 _tick / run）
         self._quit_event = 0
@@ -274,6 +275,7 @@ class VoicePill:
             return
 
         if self.settings.hud_enabled:
+            self._hud_cancel_timer()
             self.hud.show("")
             self.hud.set_phase("listening")
 
@@ -464,6 +466,31 @@ class VoicePill:
             threading.Timer(2.5, self.hud.hide).start()
         return True
 
+    # ---------- 字幕条（HUD）提示 ----------
+
+    def _hud_cancel_timer(self) -> None:
+        """撤掉还没到点的收起计时 —— HUD 要显示别的了。"""
+        with self._lock:
+            timer = self._hud_timer
+            self._hud_timer = None
+        if timer is not None:
+            timer.cancel()
+
+    def _hud_flash(self, text: str, seconds: float,
+                   hint: str = "正在聆听…") -> None:
+        """显示一条提示，seconds 秒后自动收起。
+
+        收起计时只留一个：双击 Fn 打完标记后往往马上开始口述，旧计时器到点会把
+        「正在聆听」的字幕条提前收掉，所以重排前先撤上一个。
+        """
+        self._hud_cancel_timer()
+        self.hud.show(text, hint=hint)
+        timer = threading.Timer(seconds, self.hud.hide)
+        timer.daemon = True
+        with self._lock:
+            self._hud_timer = timer
+        timer.start()
+
     # ---------- 落库标记（双击 Fn） ----------
 
     def _on_quick_tap(self) -> None:
@@ -483,8 +510,8 @@ class VoicePill:
             armed = self._capture_armed
         if not self.settings.hud_enabled:
             return
-        self.hud.set_text("下次口述 → 落 Inbox" if armed else "落库标记：关")
-        threading.Timer(5.0, self.hud.hide).start()
+        self._hud_flash("下次口述 → 落 Inbox" if armed else "落库标记：关",
+                        5.0, hint="再双击 Fn 可切换")
 
     # ---------- 杂项 ----------
 
