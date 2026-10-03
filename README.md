@@ -31,6 +31,7 @@ Voice Pill 的 Windows 移植工程。按住热键说话，松手把文字粘到
 | Codex 插件（2026-10-03） | ✅ **完成** —— 按 Fn 说的字注入当轮对话；八个 MCP 工具。插件源码在 `plugins/voice-pill/`，一键装：`plugins/install.py`。见 `docs/移植方案.md` 第 13 节 |
 | persona（2026-10-03） | ✅ **完成** —— 不另造人设：照 ANC（`HA7CH/ai-native-company`）的七段式 schema 写在 `plugins/voice-pill/persona.md`，`SKILL.md` 只引用不复述，`tools/persona-selftest.py` 14 项把关。见 `docs/移植方案.md` 第 15 节 |
 | 与 Codex 共同启停（2026-10-03） | ✅ **完成** —— 开 Codex 自动拉起（`SessionStart` 钩子，幂等），关 Codex 自动收摊（看门狗照 `anchor.json` 盯住**最外层**那个 Codex 进程，人一没就走 `--stop` 优雅路径）。**认人不认号**：句柄钉住内核里的进程对象，PID 被复用也不会认错；纸条读不到就退回常驻，绝不因为绑不上就不干活。`tools/supervise-selftest.py` 47 项把关。见 `docs/移植方案.md` 第 17 节 |
+| 口述落库（2026-10-03） | ✅ **完成** —— 按 Fn 说「记一下：…」，松手后不粘贴，而是落成 Obsidian `00_Inbox/` 下的一篇捕获笔记（带 `type/inbox`）。判定与写盘是纯函数，可脱离窗口单测；目标目录写在 `settings.json`，仓库里不存机器路径。见 `docs/移植方案.md` 第 18 节 |
 
 **M1 验收记录（2026-10-02）**
 
@@ -56,6 +57,7 @@ Voice Pill 的 Windows 移植工程。按住热键说话，松手把文字粘到
 | 路径 | 内容 |
 |---|---|
 | `src/` | Python 外壳：热键、采音、管道、粘贴、悬浮条、状态机 |
+| `src/capture.py` | 口述落库：判定口令、原子写 Inbox（纯函数，不碰 Windows API） |
 | `bin/` | 两个 ASR 引擎可执行文件放这里（`codex-asr.exe` / `freeasr.exe`），见 `bin/README.md` |
 | `vendor/` | 两个引擎的上游源码副本（`codex-asr` / `FreeASR`），与 `D:\FDE_HA7CH\voice-pill` 里的一致 |
 | `tools/build-engines.sh` | 一键编两个引擎，四个坑都注释在脚本里 |
@@ -69,6 +71,7 @@ Voice Pill 的 Windows 移植工程。按住热键说话，松手把文字粘到
 | `tools/paste-selftest.py` | 自建靶子文本框验粘贴（不污染用户正在用的窗口），含剪贴板还原 |
 | `tools/resident-selftest.py` | 常驻形态自测：单实例/护栏/清理/日志滚动/`--stop`/热重载，起真进程从外面观察，**不需要人也不需要麦克风** |
 | `tools/supervise-selftest.py` | 「和 Codex 共同启停」自测：认人 / 句柄 / 纸条 / 换人 / 收摊 / 兜底，不碰真身 |
+| `tools/capture-selftest.py` | 落库判定与原子写盘自测（31 项） |
 | `tools/mock-asr.py` | 假引擎（实现 NDJSON 契约），用来单独验管道/解码/粘贴 |
 | `tools/local-asr.py` | **本地离线引擎**（sherpa-onnx + SenseVoice），实现同一份 NDJSON 契约，`local` 后端用它 |
 | `src/console.py` | 控制台编码兜底（管道下打印 ✅ 会 GBK 崩）+ 应用日志 |
