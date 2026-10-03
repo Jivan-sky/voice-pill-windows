@@ -7,10 +7,6 @@ Voice Pill 的 Windows 移植工程。按住热键说话，松手把文字粘到
 | 上游（原版 macOS） | https://github.com/HA7CH/voice-pill · 0.2.3 · MIT |
 | 上游本地克隆 | `D:\FDE_HA7CH\voice-pill`（**只读参考，本工程不改动它**） |
 | 本工程 | `D:\Own_tools&skills\voice-pill-windows` |
-| 架构拆解（知识库） | `D:\Obsidian_database\04_Projects\Voice-Pill\架构拆解.md` |
-| 接口契约（知识库） | `D:\Obsidian_database\03_Knowledge\03-接口_数据\语音转写子进程的流式接口契约.md` |
-| 项目档案（知识库） | `D:\Obsidian_database\04_Projects\Voice-Pill\项目档案.md` |
-| **本工程镜像（知识库）** | `D:\Obsidian_database\04_Projects\Voice-Pill\Windows移植.md` —— 本目录的库内镜像，**这边改了记得同步过去** |
 
 ## 一句话思路
 
@@ -20,7 +16,7 @@ Voice Pill 的 Windows 移植工程。按住热键说话，松手把文字粘到
 
 | 阶段 | 状态 |
 |---|---|
-| 原版架构拆解 | ✅ 完成（已入库） |
+| 原版架构拆解 | ✅ 完成 |
 | 可行性评估 | ✅ 完成 |
 | 路线选型 | ✅ **B**（Python 轻量壳） |
 | 主键定案 | ✅ **Fn** —— 实测本机 Fn 上报为 `E0 63` / vk `0xFF`，按下松开成对 |
