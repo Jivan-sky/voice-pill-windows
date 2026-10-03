@@ -1,5 +1,7 @@
 # voice-pill-windows
 
+![Voice Pill Windows —— 按住 Fn 说话，松手成文](docs/assets/cover.webp)
+
 Voice Pill 的 Windows 移植工程。按住热键说话，松手把文字粘到光标处。
 
 ## 一句话思路
