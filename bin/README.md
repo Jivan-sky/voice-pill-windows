@@ -29,3 +29,13 @@
   且 MSYS2 的 `/usr/bin/link.exe` 是 coreutils 的硬链接工具，
   会**冒充 MSVC 链接器**把 msvc 目标的构建搞成莫名其妙的错误）。
 * Go → `CGO_ENABLED=1`，需要 `libopus`（MSYS2 包 `mingw-w64-x86_64-opus`）。
+
+## 第三个引擎：本地离线（**不在本目录**）
+
+`local` 后端用的是 `tools/local-asr.py`——Python 脚本，不是编译产物，所以
+留在工程里，由 `config.engine_path()` 按**工程根目录**解析（带扩展名的不去
+`bin/` 找）。它跑 sherpa-onnx + SenseVoice，16000 Hz、完成事件 `final`，
+与上面两个同理；差别是它不联网、不要账号。
+
+模型目录见 `settings.json` 的 `local_model_dir`，没配就退回
+`%LOCALAPPDATA%\VoicePill\models\<模型名>`。下载与实测见 `docs/移植方案.md` 6.4。

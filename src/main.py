@@ -300,13 +300,30 @@ def run_check(settings: config.Settings) -> int:
     print("=" * 60)
 
     print("\n[引擎]")
-    for key in ("codex", "doubao"):
+    for key in ("local", "doubao", "codex"):
         p = providers.get(key)
         path = config.engine_path(p.binary)
         exists = os.path.isfile(path)
-        print("  %-8s %-14s %s" % (key, p.binary + ".exe",
+        # 用解析后的文件名而不是 p.binary + ".exe"：本地引擎是 .py，加 .exe 会串味
+        print("  %-8s %-24s %s" % (key, os.path.basename(path),
                                    "✅ " + path if exists else "❌ 缺失 " + path))
         if not exists and key == settings.provider:
+            ok = False
+
+    print("\n[本地模型]")
+    model_dir = config.local_model_dir()
+    print("  目录      ：%s" % model_dir)
+    for name in ("model.int8.onnx", "tokens.txt"):
+        exists = os.path.isfile(os.path.join(model_dir, name))
+        print("  %-16s %s" % (name, "✅" if exists else "❌ 缺失"))
+        if not exists and settings.provider == "local":
+            ok = False
+    try:
+        import sherpa_onnx                       # noqa: F401
+        print("  %-16s ✅ 已安装" % "sherpa-onnx")
+    except ImportError:
+        print("  %-16s ❌ 未安装（pip install sherpa-onnx）" % "sherpa-onnx")
+        if settings.provider == "local":
             ok = False
 
     print("\n[麦克风]")
@@ -327,6 +344,15 @@ def run_check(settings: config.Settings) -> int:
     print("  主键      ：%s → %s" % (settings.primary_key,
                                      hotkey.describe_primary(settings.primary_spec)))
     print("  自动粘贴  ：%s" % settings.auto_paste)
+
+    print("\n[豆包凭据]")
+    cred = config.credentials_path()
+    has_cred = os.path.isfile(cred)
+    print("  %s %s" % ("✅" if has_cred else "⚠️ ", cred))
+    if not has_cred:
+        print("      → 跑 bin\\freeasr.exe auth --credential-path \"%s\" 生成" % cred)
+        if settings.provider == "doubao":
+            ok = False
 
     print("\n[Codex 凭据]")
     auth = os.path.join(os.path.expanduser("~"), ".codex", "auth.json")

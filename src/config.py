@@ -71,24 +71,57 @@ def credentials_path() -> str:
     return os.path.join(app_dir(), "doubao-credentials.json")
 
 
+LOCAL_MODEL_NAME = "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17"
+
+
+def models_dir() -> str:
+    """本地模型的兜底目录（settings 里没指定时用）。"""
+    return os.path.join(app_dir(), "models")
+
+
+def local_model_dir() -> str:
+    """本地离线引擎的模型目录。
+
+    优先 settings.json 的 `local_model_dir`，其次环境变量
+    `VOICEPILL_LOCAL_MODEL`，最后退回 `%LOCALAPPDATA%\\VoicePill\\models\\<名字>`。
+    模型不小（int8 量化版 228 MB），放哪由用户定，所以这里不做猜测。
+    """
+    configured = Settings.load().local_model_dir.strip()
+    if configured:
+        return os.path.abspath(os.path.expanduser(configured))
+    env = os.environ.get("VOICEPILL_LOCAL_MODEL", "").strip()
+    if env:
+        return os.path.abspath(os.path.expanduser(env))
+    return os.path.join(models_dir(), LOCAL_MODEL_NAME)
+
+
+def project_root() -> str:
+    """工程根目录（src/ 的上一层）。"""
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
 def bin_dir() -> str:
     """转写引擎二进制所在目录。"""
-    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    return os.path.join(root, "bin")
+    return os.path.join(project_root(), "bin")
 
 
 def engine_path(binary_name: str) -> str:
-    """引擎可执行文件完整路径（自动补 .exe）。
+    """引擎可执行文件完整路径。
 
     环境变量 `VOICEPILL_ENGINE` 可整体顶替：指向任何实现了 NDJSON 契约的
     可执行文件即可换后端，`bin/` 里没有也不影响。自测用
     `VOICEPILL_ENGINE=.../tools/mock-asr.py` 就能走假引擎跑通全链路。
+
+    不带扩展名的按「引擎二进制」处理，去 `bin/` 找并补 `.exe`；带扩展名的
+    （`tools/local-asr.py` 这类脚本引擎）按**工程根目录**解析 —— 它们的源码
+    就在工程里，跟 bin/ 下的编译产物不是一回事。
     """
     override = os.environ.get("VOICEPILL_ENGINE")
     if override:
         return override
-    exe = binary_name if binary_name.lower().endswith(".exe") else binary_name + ".exe"
-    return os.path.join(bin_dir(), exe)
+    if os.path.splitext(binary_name)[1]:
+        return os.path.join(project_root(), binary_name.replace("/", os.sep))
+    return os.path.join(bin_dir(), binary_name + ".exe")
 
 
 def engine_argv(binary_path: str) -> list:
@@ -107,11 +140,12 @@ def engine_argv(binary_path: str) -> list:
 
 @dataclass
 class Settings:
-    provider: str = "codex"           # codex | doubao
+    provider: str = "local"           # local | doubao | codex
     primary_key: str = DEFAULT_PRIMARY_KEY   # 见 PRIMARY_KEY_CHOICES
     auto_paste: bool = True
     doubao_punctuation: bool = True
     hud_enabled: bool = True
+    local_model_dir: str = ""         # 本地离线引擎的模型目录，见 config.local_model_dir()
 
     # ---- 持久化 ----
 

@@ -25,12 +25,13 @@ Voice Pill 的 Windows 移植工程。按住热键说话，松手把文字粘到
 | 路线选型 | ✅ **B**（Python 轻量壳） |
 | 主键定案 | ✅ **Fn** —— 实测本机 Fn 上报为 `E0 63` / vk `0xFF`，按下松开成对 |
 | 工具链（M0） | ✅ **完成** —— Go 1.27.0 · cargo 1.99.0 · gcc 16.2.0 · libopus · rustup gnu target |
-| Python 依赖 | ✅ venv `.venv` + sounddevice / numpy / scipy |
+| Python 依赖 | ✅ venv `.venv` + sounddevice / numpy / scipy / sherpa-onnx |
 | 外壳代码 | ✅ 8 个文件写完，`py_compile` 通过，`--check` 端到端跑通 |
 | 引擎编译（M2） | ✅ **完成** —— `codex-asr.exe` 10 653 552 B · `freeasr.exe` 24 963 013 B（静态，只依赖系统 DLL） |
 | 热键链路 | ✅ **验证通过** —— 进程在 `WinSta0\Default`、钩子+消息泵自激自收正常、物理按键实测收到 134 条 |
 | 通路验证（M1） | ✅ **完成（2026-10-02）** —— Fn → 采音 → NDJSON 管道 → 解码 → 粘贴，四段逐段验过，假引擎全链路一次通过（`EXIT CODE 0`） |
-| 真实后端 | ❌ **未通** —— 凭据全断（Codex 要 ChatGPT 登录令牌、豆包凭据未生成），与通路本身无关，见 `docs/移植方案.md` 6.4 |
+| 本地后端（M2.5） | ✅ **完成（2026-10-03）** —— `local` 跑 SenseVoice-Small int8，RTF 0.027，`pipe-selftest` 全链路通过，实时字幕保住。见 `docs/移植方案.md` 6.5 |
+| 远端后端 | ❌ **两条都不可用** —— Codex 要 ChatGPT 付费令牌；豆包非官方协议 2026-10-03 复查确认服务端已不路由（凭据与握手都正常，服务端自己回 `service discovery failure`）。代码保留，改 `settings.json` 一行可切回。见 6.4 / 6.5 |
 
 **M1 验收记录（2026-10-02）**
 
@@ -68,6 +69,7 @@ Voice Pill 的 Windows 移植工程。按住热键说话，松手把文字粘到
 | `tools/pipe-selftest.py` | 拿 WAV 直接喂引擎，跳过麦克风和热键，单独验管道/解码/超时 |
 | `tools/paste-selftest.py` | 自建靶子文本框验粘贴（不污染用户正在用的窗口），含剪贴板还原 |
 | `tools/mock-asr.py` | 假引擎（实现 NDJSON 契约），用来单独验管道/解码/粘贴 |
+| `tools/local-asr.py` | **本地离线引擎**（sherpa-onnx + SenseVoice），实现同一份 NDJSON 契约，`local` 后端用它 |
 | `src/console.py` | 控制台编码兜底（管道下打印 ✅ 会 GBK 崩） |
 | `docs/移植方案.md` | 路线对比、键位实测记录、里程碑、风险 |
 | `fn-probe.log` / `fn-probe2.log` | 探针原始日志（第一轮全键、第二轮只看 Fn 的按下松开） |
@@ -82,7 +84,9 @@ Voice Pill 的 Windows 移植工程。按住热键说话，松手把文字粘到
 .venv\Scripts\python.exe src\main.py
 ```
 
-跑之前先把两个引擎二进制放进 `bin/`（见 `bin/README.md`）。
+`local`（默认后端）需要模型：把 SenseVoice-Small int8 放到任意目录，再把路径写进
+`settings.json` 的 `local_model_dir`（下载方式见 `docs/移植方案.md` 6.5）。
+两个远端后端的二进制仍放 `bin/`（见 `bin/README.md`）。
 
 ## 许可
 

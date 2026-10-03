@@ -15,3 +15,8 @@ scipy>=1.10          # 提供 resample_poly；缺了会退回 numpy 线性插值
 # 0xFF 是「无虚拟键映射」，pynput 会不会把它原样透出来是未知数；而裸
 # WH_KEYBOARD_LL 已由 tools/fn-probe.py 实测证明能稳定拿到 Fn 的按下与松开。
 # 少一个依赖、少一层不确定。见 src/hotkey.py 的模块说明。
+
+# 本地离线转写（`local` 后端）：sherpa-onnx + SenseVoice 模型。
+# 只有走本地后端才需要；模型要另外下，见 docs/移植方案.md 6.4。
+#   pip install sherpa-onnx
+sherpa-onnx>=1.10

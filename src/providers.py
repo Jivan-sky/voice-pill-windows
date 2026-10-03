@@ -85,10 +85,43 @@ DOUBAO = DoubaoProvider(
     credential_path="",
 )
 
-PROVIDERS = {p.key: p for p in (CODEX, DOUBAO)}
-DEFAULT_PROVIDER = "codex"
+
+@dataclass(frozen=True)
+class LocalProvider(Provider):
+    """本地离线：sherpa-onnx + SenseVoice。不联网、不要账号。
+
+    模型目录由 config.local_model_dir() 决定（settings.json / 环境变量 /
+    默认位置），这里只在显式给了 model_dir 时才盖过它。
+    """
+
+    model_dir: str = ""
+
+    def arguments(self, punctuation: bool = True) -> list[str]:
+        import config
+        args = [
+            "--sample-rate", str(self.sample_rate),
+            "--model-dir", self.model_dir or config.local_model_dir(),
+        ]
+        if not punctuation:
+            args.append("--no-punctuation")
+        return args
+
+
+LOCAL = LocalProvider(
+    key="local",
+    label="本地 · SenseVoice（离线）",
+    binary="tools/local-asr.py",
+    sample_rate=16000,
+    completion_event="final",
+    finish_timeout=30.0,
+)
+
+PROVIDERS = {p.key: p for p in (CODEX, DOUBAO, LOCAL)}
+# 默认给 local：2026-10-03 实测 codex（要 ChatGPT 付费令牌）与豆包（非官方
+# 协议服务端失联）都走不通，本地离线是唯一开箱能用的那条。
+DEFAULT_PROVIDER = "local"
 
 
 def get(key: str) -> Provider:
     """按 key 取后端；未知 key 退回默认，不抛异常（对齐原版 `?? "codex"` 的容错）。"""
-    return PROVIDERS.get(key, CODEX)
+    return PROVIDERS.get(key, LOCAL)
