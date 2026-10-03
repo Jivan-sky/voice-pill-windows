@@ -34,6 +34,7 @@ single_instance.py）。
 from __future__ import annotations
 
 import argparse
+import collections
 import enum
 import json
 import os
@@ -54,6 +55,7 @@ console.make_output_safe()      # 必须在任何 print 之前；失败原因见
 
 import autostart
 import audio as audio_mod
+import bridge
 import config
 import hotkey
 import paste as paste_mod
@@ -81,6 +83,10 @@ MIN_CAPTURE_SECONDS = 0.10
 HOOK_CHECK_SECONDS = 30.0        # 热键钩子还在不在
 SETTINGS_CHECK_SECONDS = 2.0     # settings.json 有没有被改
 MAINTENANCE_SECONDS = 6 * 3600.0  # 清一次过期留存
+
+# 控制面 `take` 一次能取走的转写条数上限。取走语义 + 有界队列：用户说过的
+# 话不会在内存里无限堆着，插件那侧也不会一次收到一大串。
+PENDING_TRANSCRIPTS = 20
 
 
 class RecordWatchdog:
@@ -142,6 +148,10 @@ class VoicePill:
         self._log_path = ""
         self._transcript = ""
         self._last_error = ""
+        # 最近几次成功的转写，供控制面 `take` 取走（Codex 插件那侧用）。
+        # 只在内存里，进程一退就没了——说过的话不该在磁盘上多留一份。
+        self._pending = collections.deque(maxlen=PENDING_TRANSCRIPTS)
+        self._started_at = time.time()
         # 退出信号。见 _shutdown 的注释：不能再用 sys.exit()。
         self._stop = threading.Event()
         self._stopping = False
@@ -167,6 +177,10 @@ class VoicePill:
             on_cancel=self.on_cancel,
             on_quick_tap=lambda: None,
         )
+
+        # 控制面：外部进程（Codex 插件）靠它问状态、驱动录音、取走文字。
+        # 见 bridge.py 顶部注释。
+        self._bridge = bridge.BridgeServer(self._bridge_command)
 
     # ---------- 状态机 ----------
 
@@ -317,6 +331,8 @@ class VoicePill:
             return
 
         self._transcript = text or ""
+        if self._transcript:
+            self._pending.append(self._transcript)
         if self.settings.auto_paste and self._transcript:
             try:
                 paste_mod.paste(self._transcript, self._target_hwnd)
@@ -337,6 +353,41 @@ class VoicePill:
             self._shutdown()
 
     # ---------- 杂项 ----------
+
+    def _bridge_command(self, cmd: str, args: dict):
+        """控制面回调。跑在该连接自己的线程上，不是在主循环里。
+
+        只做转发，不在这层加判断：状态机的准入条件已经在 on_start /
+        on_stop / on_cancel 里了（比如"已经在录了"就直接忽略）。这里再判一遍
+        只会多出一份会跟那边走散的规则。
+        """
+        if cmd == "status":
+            return self._bridge_status()
+        if cmd == "take":
+            items = list(self._pending)
+            self._pending.clear()
+            return {"texts": items, "count": len(items)}
+        if cmd == "start":
+            self.on_start()
+        elif cmd == "stop":
+            self.on_stop()
+        elif cmd == "cancel":
+            self.on_cancel()
+        return self._bridge_status()
+
+    def _bridge_status(self) -> dict:
+        provider = providers.get(self.settings.provider)
+        return {
+            "pid": os.getpid(),
+            "phase": self.phase.value,
+            "provider": provider.key,
+            "provider_label": provider.label,
+            "hotkey": self.settings.primary_key,
+            "hotkey_alive": bool(self.hotkeys.alive),
+            "hud": self.settings.hud_enabled,
+            "pending": len(self._pending),
+            "uptime_seconds": round(time.time() - self._started_at, 1),
+        }
 
     def _remove_wav(self) -> None:
         if self._wav_path and os.path.isfile(self._wav_path):
@@ -369,6 +420,7 @@ class VoicePill:
         if self.settings.hud_enabled:
             self.hud.start()
         self.hotkeys.start()
+        self._bridge.start()
         self._quit_event = single_instance.open_quit_event()
 
         print("Voice Pill 已启动。")
@@ -381,6 +433,7 @@ class VoicePill:
                                  if self.settings.max_record_seconds > 0
                                  else "不限"))
         print("  Ctrl+C 退出；驻留形态用 `main.py --stop`")
+        print("  控制面  ：%s" % bridge.PIPE_NAME)
 
         self._settings_mtime = _mtime(config.Settings.path())
         self._run_maintenance()          # 开机先清一次过期留存
@@ -520,6 +573,7 @@ class VoicePill:
             return
         self._stopping = True
         self._stop.set()
+        self._bridge.stop()
         self.hotkeys.stop()
         single_instance.close_handle(self._quit_event)
         self._quit_event = 0
@@ -632,6 +686,7 @@ def run_check(settings: config.Settings) -> int:
     if not watching:
         guard.release()
     print("  看门狗    ：%s" % ("✅ 在守着" if watching else "无（没人替你重拉）"))
+    print("  控制面    ：%s" % bridge.status_line())
     print("  开机自启  ：%s" % autostart.status())
     log = config.app_log_path()
     size = os.path.getsize(log) if os.path.isfile(log) else 0

@@ -30,6 +30,7 @@ Voice Pill 的 Windows 移植工程。按住热键说话，松手把文字粘到
 | 远端后端 | ❌ **两条都不可用** —— Codex 要 ChatGPT 付费令牌；豆包非官方协议 2026-10-03 复查确认服务端已不路由（凭据与握手都正常，服务端自己回 `service discovery failure`）。代码保留，改 `settings.json` 一行可切回。见 6.4 / 6.5 |
 | 真麦克风验收 | ✅ **通过（2026-10-03）** —— 真按 Fn 录 6.79 秒 → 解码 0.19 秒 → 粘贴成功，**用户确认「很准」** |
 | 常驻形态（M5 提前） | ✅ **完成（2026-10-03）** —— 单实例锁、无窗口开机自启（看门狗）、崩溃自拉、120 秒录音护栏、日志与留存清理、配置热重载、`--stop`。见 `docs/移植方案.md` 第 11 节 |
+| 控制面（2026-10-03） | ✅ **完成** —— 命名管道 + authkey，五个命令（`status`/`start`/`stop`/`cancel`/`take`）。让外部进程（Codex 插件）能问状态、驱动录音、取走文字。见 `docs/移植方案.md` 第 12 节 |
 
 **M1 验收记录（2026-10-02）**
 
@@ -71,11 +72,11 @@ Voice Pill 的 Windows 移植工程。按住热键说话，松手把文字粘到
 | `tools/local-asr.py` | **本地离线引擎**（sherpa-onnx + SenseVoice），实现同一份 NDJSON 契约，`local` 后端用它 |
 | `src/console.py` | 控制台编码兜底（管道下打印 ✅ 会 GBK 崩）+ 应用日志 |
 | `src/single_instance.py` | 单实例互斥体：两个实例会各采一遍麦克风、各粘一遍 |
+| `src/bridge.py` | 控制面：命名管道 + authkey，给外部进程驱动本进程用 |
 | `src/supervise.py` | 看门狗：真身非正常退出时重拉，正常退出则一起退 |
 | `src/autostart.py` | 开机自启的安装/卸载/查看 |
 | `THIRD_PARTY.md` | 第三方组件与许可清单（本仓库内的正本） |
 | `docs/移植方案.md` | 路线对比、键位实测记录、里程碑、风险 |
-| `fn-probe.log` / `fn-probe2.log` | 探针原始日志（第一轮全键、第二轮只看 Fn 的按下松开） |
 
 ## 快速开始
 
@@ -122,6 +123,22 @@ Voice Pill 的 Windows 移植工程。按住热键说话，松手把文字粘到
 
 `settings.json` 里两个新开关：`max_record_seconds`（单次录音上限，默认 120，
 0 = 不限）、`retention_days`（失败录音与转写日志保留几天，默认 7，0 = 不清理）。
+
+## 从别的进程用它（控制面）
+
+驻留进程开了一条本机命名管道，给别的程序问状态、驱动录音、取走刚说的字。
+一次连接一条请求，请求与响应各一行 JSON；密钥在
+`%LOCALAPPDATA%\VoicePill\bridge.key`，两端自动生成。
+
+```python
+import sys; sys.path.insert(0, r"<工程>\src")
+import bridge
+
+bridge.call("status")   # {pid, phase, provider, hotkey_alive, pending, ...}
+bridge.call("take")     # {texts: [...], count: n} —— 取走并清空
+```
+
+五个命令：`status` / `start` / `stop` / `cancel` / `take`。`take` 是**取走**语义。
 
 ## 许可
 
