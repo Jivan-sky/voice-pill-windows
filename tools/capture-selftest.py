@@ -50,6 +50,26 @@ def check_parse(ck) -> None:
     ck("空白口令混在前面也能命中", capture.parse("记一下 x", ["", "  ", "记一下"]) == (True, "x"))
 
 
+def check_decide(ck) -> None:
+    """标记与口令两条路的合流（双击 Fn 那条不经过 ASR）"""
+    p = ["记一下"]
+    ck("有标记：整句当正文，不要求口令",
+       capture.decide("明天跟 A 确认接口", p, True) == (True, "明天跟 A 确认接口"))
+    ck("有标记：前导标点照剥",
+       capture.decide("，明天开会", p, True) == (True, "明天开会"))
+    ck("有标记：顺口说了口令也剥掉（触发词不是内容）",
+       capture.decide("记一下 买牛奶", p, True) == (True, "买牛奶"))
+    ck("有标记：口令表为空也照样落",
+       capture.decide("英文 hook 也照样", [], True) == (True, "英文 hook 也照样"))
+    ck("有标记：空文本不命中", capture.decide("", p, True) == (False, ""))
+    ck("有标记：只有标点不命中", capture.decide("：，", p, True) == (False, ""))
+    ck("没标记：退回口令这条路",
+       capture.decide("记一下 买牛奶", p, False) == (True, "买牛奶"))
+    ck("没标记又没口令：不命中",
+       capture.decide("明天开会", p, False) == (False, ""))
+    ck("不传标记：默认不落库", capture.decide("明天开会", p) == (False, ""))
+
+
 def check_compose(ck) -> None:
     """拼装内容"""
     now = datetime(2026, 10, 3, 15, 42, 33)
@@ -118,7 +138,7 @@ def main() -> int:
     tmp = tempfile.mkdtemp(prefix="vp-capture-")
     try:
         print("=== 口述落库自测 ===")
-        for fn, args in ((check_parse, ()), (check_compose, ()),
+        for fn, args in ((check_parse, ()), (check_decide, ()), (check_compose, ()),
                          (check_write, (tmp,)), (check_write_cleanup, (tmp,))):
             print("\n[%s]" % fn.__doc__.strip().splitlines()[0])
             fn(ck, *args)

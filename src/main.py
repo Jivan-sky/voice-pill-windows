@@ -98,6 +98,11 @@ PENDING_TRANSCRIPTS = 20
 # 实际故障正是这个（见上游 docs/VERIFY-0.2.4.md）。
 DELIVERY_TIMEOUT_SECONDS = 8.0
 
+# 「双击 Fn → 下一次落库」两下之间最长的间隔（秒）。定 0.35 的依据：
+# 太短会漏（人手很难稳定地 <0.2 秒连点两下），太长会和「按住说话」抢手势
+# （按住 0.18 秒就起录，超过这个数还没点第二下，人就会以为没生效）。
+DOUBLE_TAP_SECONDS = 0.35
+
 
 class RecordWatchdog:
     """单次录音的时长护栏：到点自己结束，不等松手事件。
@@ -177,6 +182,11 @@ class VoicePill:
         self._watchdog = RecordWatchdog(
             settings.max_record_seconds, self._on_max_duration)
 
+        # 「下一次落库」的手指标记（双击 Fn 打上，见 _on_quick_tap）。
+        # 与 ASR 无关，所以口令被听歪也不影响这条路；只对下一次口述有效。
+        self._capture_armed = False
+        self._last_quick_tap = 0.0
+
         # 常驻形态的定期杂务（见 _tick / run）
         self._quit_event = 0
         self._quit_seen = False
@@ -193,7 +203,7 @@ class VoicePill:
             on_start=self.on_start,
             on_stop=self.on_stop,
             on_cancel=self.on_cancel,
-            on_quick_tap=lambda: None,
+            on_quick_tap=self._on_quick_tap,
         )
 
         # 发声（离线 TTS）。懒加载：模型 325 MB，第一次真要说话时才读盘。
@@ -385,11 +395,21 @@ class VoicePill:
             # 也宁可让它在队列里等一次取用，而不是悄悄丢掉。
             with self._lock:
                 self._pending.append((time.time(), text))
+        # 标记只对「下一次口述」有效：一有正文就消费掉，不管这次是否真落库
+        # （否则它会在内存里一直亮着，下一次说话莫名进 Inbox）。
+        armed = False
+        if text:
+            with self._lock:
+                armed = self._capture_armed
+                self._capture_armed = False
         captured = False
         if text and self.settings.capture_enabled and self.settings.capture_dir:
-            hit, body = capture.parse(text, self.settings.capture_prefixes)
+            hit, body = capture.decide(text, self.settings.capture_prefixes, armed)
             if hit:
                 captured = self._capture(body)
+        elif armed:
+            print("[落库标记] 但落库没开：配 capture_dir 才生效（这次按普通粘贴）",
+                  file=sys.stderr)
 
         if captured:
             pass                        # 已落库：不粘贴、也不打印
@@ -443,6 +463,28 @@ class VoicePill:
             self.hud.set_text("已落 Inbox")
             threading.Timer(2.5, self.hud.hide).start()
         return True
+
+    # ---------- 落库标记（双击 Fn） ----------
+
+    def _on_quick_tap(self) -> None:
+        """Fn 轻点（没到长按阈值）→ 两下之内算一次双击，切换落库标记。
+
+        为什么用「轻点 Fn」而不是录音里按某个键：Fn 按着的时候再按别的键，
+        会被笔记本的 Fn 组合键（音量 / 亮度）先吃掉；而轻点 Fn 今天什么都不
+        做，是现成空着的手势 —— hotkey.py 一直在上报它（on_quick_tap）。
+        """
+        now = time.monotonic()
+        with self._lock:
+            if now - self._last_quick_tap > DOUBLE_TAP_SECONDS:
+                self._last_quick_tap = now
+                return                    # 这是第一下：等第二下
+            self._last_quick_tap = 0.0
+            self._capture_armed = not self._capture_armed
+            armed = self._capture_armed
+        if not self.settings.hud_enabled:
+            return
+        self.hud.set_text("下次口述 → 落 Inbox" if armed else "落库标记：关")
+        threading.Timer(5.0, self.hud.hide).start()
 
     # ---------- 杂项 ----------
 

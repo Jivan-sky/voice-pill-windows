@@ -49,6 +49,24 @@ def parse(text: str, prefixes: Sequence[str]) -> Tuple[bool, str]:
     return False, ""
 
 
+def decide(text: str, prefixes: Sequence[str], armed: bool = False) -> Tuple[bool, str]:
+    """这次转写要不要落库，正文是什么。
+
+    `armed` 是「手指打的标记」（双击 Fn）。标记亮着就落库，且**不再要求
+    句子以口令开头** —— 口令要靠 ASR 把「记一下」听对，而英文/技术词常
+    被听歪（见 issue #3）；手指不会听错。
+    唯一保留的口令处理：标记亮着时顺口说了口令，也把它剥掉 —— 那是触发
+    词，不是内容。标记与口令都没有 → 普通说话，不落库。
+    """
+    hit, body = parse(text, prefixes)
+    if hit:
+        return True, body
+    if not armed:
+        return False, ""
+    body = _strip_leading(text)
+    return (True, body) if body else (False, "")
+
+
 def compose(body: str, now: datetime) -> str:
     """拼出一篇捕获笔记的完整内容：frontmatter + 正文 + 来源行。
 
