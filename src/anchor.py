@@ -4,7 +4,7 @@
 为什么需要它
 ------------
 用户要的形态是「开着 Codex，按 Fn 就有反应；关了 Codex，它自己收摊」。前
-一半由 SessionStart 钩子拉起（见 plugins/voice-pill/hook_session_start.py），
+一半由 SessionStart 钩子拉起（插件侧入口 voicepill.exe session-start），
 后一半在这里：钩子顺手把自己「在谁的子孙里」查出来落成一张小纸条，看门狗
 （supervise.py）照着纸条盯人，人一没就走收摊流程。
 

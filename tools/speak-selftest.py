@@ -256,9 +256,9 @@ def check_stop_hook_is_safe(ck: Checker) -> None:
     import subprocess
     import tempfile
 
-    hook = os.path.join(os.path.dirname(os.path.dirname(
-        os.path.abspath(__file__))), "plugins", "voice-pill", "hook_stop.py")
-    ck("钩子脚本存在", os.path.isfile(hook), hook)
+    exe = os.path.join(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))), "bin", "voicepill.exe")
+    ck("钩子程序存在（Go 单 exe）", os.path.isfile(exe), exe)
 
     cases = [
         ('{"hook_event_name":"Stop","session_id":"s","last_assistant_message":"改完了。"}', "有正文"),
@@ -277,7 +277,7 @@ def check_stop_hook_is_safe(ck: Checker) -> None:
                PYTHONIOENCODING="utf-8")
     for payload, label in cases:
         t0 = time.time()
-        proc = subprocess.run([sys.executable, hook], input=payload,
+        proc = subprocess.run([exe, "stop"], input=payload,
                               capture_output=True, text=True, timeout=30,
                               env=env, encoding="utf-8")
         dt = time.time() - t0
