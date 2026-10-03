@@ -21,17 +21,18 @@ Voice Pill 的 Windows 移植工程。按住热键说话，松手把文字粘到
 | 热键链路 | ✅ **验证通过** —— 进程在 `WinSta0\Default`、钩子+消息泵自激自收正常、物理按键实测收到 134 条 |
 | 通路验证（M1） | ✅ **完成（2026-10-02）** —— Fn → 采音 → NDJSON 管道 → 解码 → 粘贴，四段逐段验过，假引擎全链路一次通过（`EXIT CODE 0`） |
 | 本地后端（M2.5） | ✅ **完成（2026-10-03）** —— `local` 跑 SenseVoice-Small int8，RTF 0.027，`pipe-selftest` 全链路通过，实时字幕保住。见 `docs/移植方案.md` 6.5 |
-| 发声（2026-10-03） | ✅ **完成** —— 离线神经 TTS，让它回话也能听见。Kokoro 多语言 v1.1（103 音色）落在 `D:\VoicePill-models\`，与 ASR 模型并排；懒加载、整段一条输出流 + 合成预取一句、按 Fn 立刻打断。**默认按需**（`speak_replies=false`），走控制面 `speak`/`shutup`、MCP 工具、或回合结束 `Stop` 钩子。不联网、不需要账号。见 `docs/移植方案.md` 第 16 节 |
+| 发声（2026-10-03） | ✅ **完成** —— 离线神经 TTS，让它回话也能听见。Kokoro 多语言 v1.1（103 音色）落在本机模型目录，与 ASR 模型并排；懒加载、整段一条输出流 + 合成预取一句、按 Fn 立刻打断。**默认按需**（`speak_replies=false`），走控制面 `speak`/`shutup`、MCP 工具、或回合结束 `Stop` 钩子。不联网、不需要账号。见 `docs/移植方案.md` 第 16 节 |
 | 远端后端 | ❌ **两条都不可用** —— Codex 要 ChatGPT 付费令牌；豆包非官方协议 2026-10-03 复查确认服务端已不路由（凭据与握手都正常，服务端自己回 `service discovery failure`）。代码保留，改 `settings.json` 一行可切回。见 6.4 / 6.5 |
 | 真麦克风验收 | ✅ **通过（2026-10-03）** —— 真按 Fn 录 6.79 秒 → 解码 0.19 秒 → 粘贴成功，**用户确认「很准」** |
 | 常驻形态（M5 提前） | ✅ **完成（2026-10-03）** —— 单实例锁、无窗口开机自启（看门狗）、崩溃自拉、120 秒录音护栏、日志与留存清理、配置热重载、`--stop`。见 `docs/移植方案.md` 第 11 节 |
 | 控制面（2026-10-03） | ✅ **完成** —— 命名管道 + authkey，七个命令（`status`/`start`/`stop`/`cancel`/`take`/`speak`/`shutup`）。让外部进程（Codex 插件）能问状态、驱动录音、取走文字。见 `docs/移植方案.md` 第 12 节 |
-| 控制面加固（2026-10-03） | ✅ **完成** —— 发声自测踩出两个真 bug 并修掉：管道名原本全机共用（另一个用户、或密钥重建后的客户端能把控制面**永久打死**），客户端握手原本没有超时（会**永不返回**）。现在管道名按用户派生、建连 3 秒上限、服务端不被坏连接带走；`tools/bridge-selftest.py` 22 项专盯坏输入。见 `docs/移植方案.md` 12.5 |
+| 控制面加固（2026-10-03） | ✅ **完成** —— 发声自测踩出两个真 bug 并修掉：管道名原本全机共用（另一个用户、或密钥重建后的客户端能把控制面**永久打死**），客户端握手原本没有超时（会**永不返回**）。现在管道名按用户派生、建连 3 秒上限、服务端不被坏连接带走；`tools/bridge-selftest.py` 20 项专盯坏输入。见 `docs/移植方案.md` 12.5 |
 | 交付护栏（2026-10-03） | ✅ **完成** —— 对照上游 0.2.4：粘贴卡死 8 秒自动解锁；非 `PasteError` 异常不再静默锁死 Fn；代际令牌保证迟到的旧交付不碰新会话。见 `docs/移植方案.md` 第 14 节 |
 | Codex 插件（2026-10-03） | ✅ **完成** —— 按 Fn 说的字注入当轮对话；八个 MCP 工具。插件源码在 `plugins/voice-pill/`，一键装：`plugins/install.py`。见 `docs/移植方案.md` 第 13 节 |
 | persona（2026-10-03） | ✅ **完成** —— 不另造人设：照 ANC（`HA7CH/ai-native-company`）的七段式 schema 写在 `plugins/voice-pill/persona.md`，`SKILL.md` 只引用不复述，`tools/persona-selftest.py` 14 项把关。见 `docs/移植方案.md` 第 15 节 |
 | 与 Codex 共同启停（2026-10-03） | ✅ **完成** —— 开 Codex 自动拉起（`SessionStart` 钩子，幂等），关 Codex 自动收摊（看门狗照 `anchor.json` 盯住**最外层**那个 Codex 进程，人一没就走 `--stop` 优雅路径）。**认人不认号**：句柄钉住内核里的进程对象，PID 被复用也不会认错；纸条读不到就退回常驻，绝不因为绑不上就不干活。`tools/supervise-selftest.py` 47 项把关。见 `docs/移植方案.md` 第 17 节 |
 | 口述落库（2026-10-03） | ✅ **完成** —— 按 Fn 说「记一下：…」，松手后不粘贴，而是落成 Obsidian `00_Inbox/` 下的一篇捕获笔记（带 `type/inbox`）。判定与写盘是纯函数，可脱离窗口单测；目标目录写在 `settings.json`，仓库里不存机器路径。见 `docs/移植方案.md` 第 18 节 |
+| 插件换 Go 单 exe（2026-10-03） | ✅ **完成** —— 插件侧交付物从「plugin venv + 8 个 Python 文件」换成一个 `voicepill.exe`（8 个 MCP 工具 + 3 个钩子入口）；控制面新增一条语言无关的 NDJSON 通道，旧的 `multiprocessing` 通道原样保留。见 `docs/移植方案.md` 第 19–22 节 |
 
 **M1 验收记录（2026-10-02）**
 
@@ -59,7 +60,9 @@ Voice Pill 的 Windows 移植工程。按住热键说话，松手把文字粘到
 | `src/` | Python 外壳：热键、采音、管道、粘贴、悬浮条、状态机 |
 | `src/capture.py` | 口述落库：判定口令、原子写 Inbox（纯函数，不碰 Windows API） |
 | `bin/` | 两个 ASR 引擎可执行文件放这里（`codex-asr.exe` / `freeasr.exe`），见 `bin/README.md` |
-| `vendor/` | 两个引擎的上游源码副本（`codex-asr` / `FreeASR`），与 `D:\FDE_HA7CH\voice-pill` 里的一致 |
+| `bin/voicepill.exe` | 插件侧单文件可执行程序（8 个 MCP 工具 + 3 个钩子入口），由 `tools/build-plugin-exe.ps1` 产出 |
+| `go/voicepill/` | 插件侧 Go 单 exe 源码：一个二进制两种身份（MCP stdio 服务端 + 三个钩子入口） |
+| `vendor/` | 两个引擎的上游源码副本（`codex-asr` / `FreeASR`），与上游 macOS 版里的那份一致 |
 | `tools/build-engines.sh` | 一键编两个引擎，四个坑都注释在脚本里 |
 | `tools/fn-probe.py` | Fn 键探针（Raw Input + 低级钩子双通道），带 `--keyup` / `--only` 开关 |
 | `tools/desktop-probe.py` | 排查"收不到键盘"：窗口站/桌面/完整性 + 钩子自激自收 |
@@ -74,6 +77,8 @@ Voice Pill 的 Windows 移植工程。按住热键说话，松手把文字粘到
 | `tools/capture-selftest.py` | 落库判定与原子写盘自测（31 项） |
 | `tools/mock-asr.py` | 假引擎（实现 NDJSON 契约），用来单独验管道/解码/粘贴 |
 | `tools/local-asr.py` | **本地离线引擎**（sherpa-onnx + SenseVoice），实现同一份 NDJSON 契约，`local` 后端用它 |
+| `tools/build-plugin-exe.ps1` | 一键编 `bin/voicepill.exe`（`-trimpath -s -w`，二进制不带本机路径） |
+| `tools/pluginexe-selftest.py` | Go exe 端到端自测（59 项）：假引擎 + 真 exe 打八个工具与三个钩子，与冻结的 Python 契约对拍 |
 | `src/console.py` | 控制台编码兜底（管道下打印 ✅ 会 GBK 崩）+ 应用日志 |
 | `src/single_instance.py` | 单实例互斥体：两个实例会各采一遍麦克风、各粘一遍 |
 | `src/bridge.py` | 控制面：命名管道 + authkey，给外部进程驱动本进程用 |
@@ -83,7 +88,7 @@ Voice Pill 的 Windows 移植工程。按住热键说话，松手把文字粘到
 | `THIRD_PARTY.md` | 第三方组件与许可清单（本仓库内的正本） |
 | `docs/移植方案.md` | 路线对比、键位实测记录、里程碑、风险 |
 | `plugins/voice-pill/` | Codex 插件源码：技能、`.mcp.json`、三个钩子（`SessionStart` 拉起+绑命 / `UserPromptSubmit` 说话进对话 / `Stop` 回复出声）（**仓库是唯一源码**，靠目录联接出现在 Codex 眼里） |
-| `plugins/install.py` | 一键把插件接到本机：建目录联接、铺 venv、写机器相关路径、`codex plugin add` |
+| `plugins/install.py` | 一键把插件接到本机：建目录联接、放置 exe、渲染模板、`codex plugin add`（不再铺 venv） |
 
 ## 快速开始
 
@@ -161,15 +166,16 @@ Codex 也能反过来问状态、请你录一段、把队列里的字取走。�
 .venv\Scripts\python.exe plugins\install.py
 ```
 
-脚本做四件事：把 `%USERPROFILE%\plugins\voice-pill` 建成指向本仓库
-`plugins/voice-pill` 的**目录联接**；铺好插件自己的 venv
-（`%LOCALAPPDATA%\VoicePill\plugin-venv`）；写机器相关的两条绝对路径；
-`codex plugin add voice-pill@personal`。**装完要新开一个 Codex 线程**才会拾取。
+脚本做这几件事：把 `%USERPROFILE%\plugins\voice-pill` 建成指向本仓库
+`plugins/voice-pill` 的**目录联接**；把 `bin\voicepill.exe` 摆进插件目录；按模板渲染出
+`.mcp.json` 与 `hooks/hooks.json`（机器路径只在这两处，且被 `.gitignore` 挡在仓库外）；
+写引擎根纸条 `%LOCALAPPDATA%\VoicePill\engine.json`；`codex plugin add voice-pill@personal`。
+**装完要新开一个 Codex 线程**才会拾取。
 
 两条硬约束（实测，别绕）：
 
 - 插件在 Codex 眼里必须住在一个**不含 `&`** 的路径上——本仓库所在的
-  `D:\Own_tools&skills\...` 带 `&`：命令串不加引号会被 cmd 当分隔符拆断（钩子报
+  `<仓库根>` 带 `&`：命令串不加引号会被 cmd 当分隔符拆断（钩子报
   Failed），加了引号 Codex 只回一句 `Completed`，脚本根本没被执行。所以走目录联接。
 - `.mcp.json` 与 `hooks/hooks.json` 里的路径**只能是绝对路径**（插件会被整包拷进
   Codex 自己的 cache，相对路径在那边解析不了）。这两处由 `install.py` 生成。
@@ -184,4 +190,4 @@ Codex 也能反过来问状态、请你录一段、把队列里的字取走。�
 ## 许可
 
 原版为 MIT。移植产物沿用 MIT，保留上游署名与第三方组件许可，清单见本仓库
-`THIRD_PARTY.md`（上游 macOS 版那份在 `D:\FDE_HA7CH\voice-pill\THIRD_PARTY.md`）。
+`THIRD_PARTY.md`（上游 macOS 版也有同名一份）。
