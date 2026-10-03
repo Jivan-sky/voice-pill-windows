@@ -1,0 +1,114 @@
+[
+  {
+    "description": "查看 Voice Pill 常驻引擎的状态：是否在运行、当前阶段、后端、热键、待取文字条数。",
+    "inputSchema": {
+      "properties": {},
+      "title": "voice_pill_statusArguments",
+      "type": "object"
+    },
+    "name": "voice_pill_status"
+  },
+  {
+    "description": "让常驻引擎录一段音并返回转写文字。\n\n    适用于想直接用语音口述一段内容给我。录音会在 `seconds` 秒后自动结束；\n    期间用户自己按 Fn 松手也会提前结束。返回 text 为空表示这段没人说话，\n    或麦克风没出声。\n    ",
+    "inputSchema": {
+      "properties": {
+        "seconds": {
+          "default": 10.0,
+          "title": "Seconds",
+          "type": "number"
+        }
+      },
+      "title": "voice_pill_listenArguments",
+      "type": "object"
+    },
+    "name": "voice_pill_listen"
+  },
+  {
+    "description": "结束正在进行的录音并返回转写文字（若当时没在录音，则返回队列里待取的文字）。",
+    "inputSchema": {
+      "properties": {},
+      "title": "voice_pill_stopArguments",
+      "type": "object"
+    },
+    "name": "voice_pill_stop"
+  },
+  {
+    "description": "丢弃正在进行的录音，不转写、不粘贴。",
+    "inputSchema": {
+      "properties": {},
+      "title": "voice_pill_cancelArguments",
+      "type": "object"
+    },
+    "name": "voice_pill_cancel"
+  },
+  {
+    "description": "取走并清空「待取文字」（用户此前按 Fn 说过的、已经粘贴过的那些）。\n\n    取走语义：同一个第二次调用不会重复拿到。用于用户已经用 Fn 说完了、\n    再由我来读取内容的场景。只含保鲜期（默认 30 分钟，见\n    settings.pending_ttl_minutes）内的字：更早的已经作废、取不回来。\n    ",
+    "inputSchema": {
+      "properties": {},
+      "title": "voice_pill_takeArguments",
+      "type": "object"
+    },
+    "name": "voice_pill_take"
+  },
+  {
+    "description": "把这段文字用**本机离线 TTS** 念出来（不联网、不需要账号）。\n\n    什么时候用：用户希望你「说出来」而不是只打字——比如他正在做别的事、\n    或者明确说「念给我听」。念之前会把 markdown 记号去掉、按句切开，\n    所以传原文就行，不用自己清理。\n\n    注意：这**不是**每轮自动念。默认不自动；要每轮回复都念，由用户在\n    `settings.json` 里打开 `speak_replies`。用户说「别念了」时用\n    `voice_pill_shutup`。\n    ",
+    "inputSchema": {
+      "properties": {
+        "text": {
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "title": "voice_pill_speakArguments",
+      "type": "object"
+    },
+    "name": "voice_pill_speak"
+  },
+  {
+    "description": "立刻让它闭嘴（打断正在念的话）。\n\n    用户按 Fn 也会自动打断——这是\"对话\"而不是\"广播\"的关键。\n    ",
+    "inputSchema": {
+      "properties": {},
+      "title": "voice_pill_shutupArguments",
+      "type": "object"
+    },
+    "name": "voice_pill_shutup"
+  },
+  {
+    "description": "给 UserPromptSubmit 钩子用的：把待取文字作为本轮附加上下文注入。\n\n    由 Codex 的事件驱动调用，不是给模型主动调的。没有待取文字时原样放行。\n    ",
+    "inputSchema": {
+      "properties": {
+        "cwd": {
+          "default": "",
+          "title": "Cwd",
+          "type": "string"
+        },
+        "hook_event_name": {
+          "default": "",
+          "title": "Hook Event Name",
+          "type": "string"
+        },
+        "prompt": {
+          "default": "",
+          "title": "Prompt",
+          "type": "string"
+        },
+        "session_id": {
+          "default": "",
+          "title": "Session Id",
+          "type": "string"
+        },
+        "turn_id": {
+          "default": "",
+          "title": "Turn Id",
+          "type": "string"
+        }
+      },
+      "title": "voice_pill_prompt_hookArguments",
+      "type": "object"
+    },
+    "name": "voice_pill_prompt_hook"
+  }
+]
