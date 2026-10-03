@@ -29,7 +29,7 @@ Voice Pill 的 Windows 移植工程。按住热键说话，松手把文字粘到
 | 控制面加固（2026-10-03） | ✅ **完成** —— 发声自测踩出两个真 bug 并修掉：管道名原本全机共用（另一个用户、或密钥重建后的客户端能把控制面**永久打死**），客户端握手原本没有超时（会**永不返回**）。现在管道名按用户派生、建连 3 秒上限、服务端不被坏连接带走；`tools/bridge-selftest.py` 20 项专盯坏输入。见 `docs/移植方案.md` 12.5 |
 | 交付护栏（2026-10-03） | ✅ **完成** —— 对照上游 0.2.4：粘贴卡死 8 秒自动解锁；非 `PasteError` 异常不再静默锁死 Fn；代际令牌保证迟到的旧交付不碰新会话。见 `docs/移植方案.md` 第 14 节 |
 | Codex 插件（2026-10-03） | ✅ **完成** —— 按 Fn 说的字注入当轮对话；八个 MCP 工具。插件源码在 `plugins/voice-pill/`，一键装：`plugins/install.py`。见 `docs/移植方案.md` 第 13 节 |
-| persona（2026-10-03） | ✅ **完成** —— 不另造人设：照 ANC（`HA7CH/ai-native-company`）的七段式 schema 写在 `plugins/voice-pill/persona.md`，`SKILL.md` 只引用不复述，`tools/persona-selftest.py` 14 项把关。见 `docs/移植方案.md` 第 15 节 |
+| persona（2026-10-03） | ✅ **完成** —— 不另造人设：照 ANC（`HA7CH/ai-native-company`）的七段式 schema 写在 `plugins/voice-pill/persona.md`，`SKILL.md` 只引用不复述，`tools/persona-selftest.py` 16 项把关。见 `docs/移植方案.md` 第 15 节 |
 | 与 Codex 共同启停（2026-10-03） | ✅ **完成** —— 开 Codex 自动拉起（`SessionStart` 钩子，幂等），关 Codex 自动收摊（看门狗照 `anchor.json` 盯住**最外层**那个 Codex 进程，人一没就走 `--stop` 优雅路径）。**认人不认号**：句柄钉住内核里的进程对象，PID 被复用也不会认错；纸条读不到就退回常驻，绝不因为绑不上就不干活。`tools/supervise-selftest.py` 47 项把关。见 `docs/移植方案.md` 第 17 节 |
 | 口述落库（2026-10-03） | ✅ **完成** —— 按 Fn 说「记一下：…」，松手后不粘贴，而是落成 Obsidian `00_Inbox/` 下的一篇捕获笔记（带 `type/inbox`）。判定与写盘是纯函数，可脱离窗口单测；目标目录写在 `settings.json`，仓库里不存机器路径。见 `docs/移植方案.md` 第 18 节 |
 | 插件换 Go 单 exe（2026-10-03） | ✅ **完成** —— 插件侧交付物从「plugin venv + 8 个 Python 文件」换成一个 `voicepill.exe`（8 个 MCP 工具 + 3 个钩子入口）；控制面新增一条语言无关的 NDJSON 通道，旧的 `multiprocessing` 通道原样保留。**实测（同一台机器，各 5 次取中位数）**：`initialize` 往返 Python 版 **2345 ms** → Go 版 **42 ms**（约 56×）；复跑办法 `tools/pluginexe-selftest.py --timing`，只报数不判失败。见 `docs/移植方案.md` 第 19–22 节 |
@@ -78,7 +78,7 @@ Voice Pill 的 Windows 移植工程。按住热键说话，松手把文字粘到
 | `tools/mock-asr.py` | 假引擎（实现 NDJSON 契约），用来单独验管道/解码/粘贴 |
 | `tools/local-asr.py` | **本地离线引擎**（sherpa-onnx + SenseVoice），实现同一份 NDJSON 契约，`local` 后端用它 |
 | `tools/build-plugin-exe.ps1` | 一键编 `bin/voicepill.exe`（`-trimpath -s -w`，二进制不带本机路径） |
-| `tools/pluginexe-selftest.py` | Go exe 端到端自测（59 项）：假引擎 + 真 exe 打八个工具与三个钩子，与冻结的 Python 契约对拍 |
+| `tools/pluginexe-selftest.py` | Go exe 端到端自测（61 项）：假引擎 + 真 exe 打八个工具与三个钩子，与冻结的 Python 契约对拍 |
 | `src/console.py` | 控制台编码兜底（管道下打印 ✅ 会 GBK 崩）+ 应用日志 |
 | `src/single_instance.py` | 单实例互斥体：两个实例会各采一遍麦克风、各粘一遍 |
 | `src/bridge.py` | 控制面：命名管道 + authkey，给外部进程驱动本进程用 |
