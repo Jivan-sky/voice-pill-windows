@@ -184,35 +184,65 @@ def check_rotation(ck: Checker) -> None:
 # ---------- [D] 过期数据清理 ----------
 
 def check_prune(ck: Checker) -> None:
-    print("\n[D] 过期留存清理（否则每次失败都留一个文件，只增不减）")
-    old_wav = os.path.join(config.recordings_dir(), "rec-20000101-000000.wav")
-    old_log = os.path.join(config.logs_dir(), "rec-20000101-000000.log")
-    fresh = os.path.join(config.recordings_dir(), "rec-20990101-000000.wav")
+    print("\n[D] 过期留存清理（窗口是分钟级：默认 3 分钟）")
+    rec, lg = config.recordings_dir(), config.logs_dir()
+    old_wav = os.path.join(rec, "rec-20000101-000000.wav")    # 30 天前：早该清
+    old_log = os.path.join(lg, "rec-20000101-000000.log")     # 同上（转写日志）
+    over_wav = os.path.join(rec, "rec-20000101-000001.wav")   # 4 分钟前：刚过窗
+    in_wav = os.path.join(rec, "rec-20000101-000002.wav")     # 1 分钟前：还在窗内
+    fresh_wav = os.path.join(rec, "rec-20990101-000000.wav")  # 刚写下
+    dflt_wav = os.path.join(rec, "rec-20000101-000003.wav")   # 4 分钟前：试默认窗口
+    zero_wav = os.path.join(rec, "rec-20000101-000004.wav")   # 4 分钟前：试 0 = 不清理
     app_log = config.app_log_path()
     # 本脚本自己挂了日志（见 main()），所以 app.log 必然存在；仍然做个存在性
     # 判断，是为了这段逻辑单独拿出来跑时不会假失败。
     app_log_mtime = os.path.getmtime(app_log) if os.path.isfile(app_log) else 0.0
+    made = (old_wav, old_log, over_wav, in_wav, fresh_wav, dflt_wav, zero_wav)
+    now = time.time()
+
+    def age(path: str, minutes: float) -> None:
+        """写一个 rec-* 文件，并把 mtime 拨回 minutes 分钟前。"""
+        with open(path, "wb") as fh:
+            fh.write(b"x")
+        t = now - minutes * 60.0
+        os.utime(path, (t, t))
 
     try:
-        for path in (old_wav, old_log, fresh):
-            with open(path, "wb") as fh:
-                fh.write(b"x")
-        stamp = time.time() - 30 * 86400
-        os.utime(old_wav, (stamp, stamp))
-        os.utime(old_log, (stamp, stamp))
+        age(old_wav, 30 * 24 * 60)          # 30 天
+        age(old_log, 30 * 24 * 60)
+        age(over_wav, 4)
+        age(in_wav, 1)
+        age(dflt_wav, 4)
+        with open(fresh_wav, "wb") as fh:
+            fh.write(b"x")
         if app_log_mtime:
             # 只改时间戳，不动内容：验证 app.log 不在清理范围内
-            os.utime(app_log, (stamp, stamp))
+            os.utime(app_log, (now - 30 * 86400, now - 30 * 86400))
 
-        removed = config.prune_data(7)
+        gone = config.prune_data(3)
         ck("30 天前的失败录音被删", not os.path.exists(old_wav))
         ck("30 天前的转写日志被删", not os.path.exists(old_log))
-        ck("今天的录音留着", os.path.exists(fresh))
+        ck("4 分钟前的失败录音被删（窗口 3 分钟）", not os.path.exists(over_wav))
+        ck("1 分钟前的录音留着（还没过窗）", os.path.exists(in_wav))
+        ck("刚写下的录音留着", os.path.exists(fresh_wav))
         ck("app.log 不参与清理（进程正开着它）",
            (app_log_mtime == 0.0 or os.path.isfile(app_log))
-           and app_log not in removed)
+           and app_log not in gone)
+
+        # 不传参走的是默认窗口，也必须是分钟级：4 分钟前的照样该清掉。
+        # 这条盯的是「默认值别悄悄退回按天」——那正是 2026-10-03 改掉的口径。
+        config.prune_data()
+        ck("不传参走默认窗口（%s 分钟），4 分钟前的照样清"
+           % config.RETENTION_MINUTES, not os.path.exists(dflt_wav))
+
+        # 0 = 不清理：一个都不许动。文件放在这里才建——上面那次默认清理
+        # 会把它一起带走（它也是 4 分钟前的 rec-*），那样就测不到 0 了。
+        age(zero_wav, 4)
+        empty = config.prune_data(0)
+        ck("prune_data(0) 不清理，过期文件也留着",
+           empty == [] and os.path.exists(zero_wav))
     finally:
-        for path in (old_wav, old_log, fresh):
+        for path in made:
             try:
                 os.remove(path)
             except OSError:
