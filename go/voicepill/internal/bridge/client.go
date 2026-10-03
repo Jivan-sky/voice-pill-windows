@@ -32,8 +32,6 @@ const (
 	KeyFileName = "bridge.key"
 	// MaxRequestBytes 是单行上限，对齐 Python 侧 MAX_REQUEST_BYTES。
 	MaxRequestBytes = 64 * 1024
-	// DefaultTimeout 是命令表之外的兜底超时（连接 + 握手 + 一问一答）。
-	DefaultTimeout = 3 * time.Second
 )
 
 // Commands 是 NDJSON 通道的七个命令，与 Python 侧 bridge.COMMANDS 一致。
@@ -173,6 +171,9 @@ func (c *Client) Call(cmd string, args map[string]any) (json.RawMessage, error) 
 // call 把「连接 + 握手 + 一问一答」整体放进一个 goroutine，超时就把连接
 // 关掉（Windows 上关句柄会打断阻塞的 ReadFile），返回人话错误。
 func call(pipe string, cmd string, args map[string]any, timeout time.Duration) (json.RawMessage, error) {
+	if args == nil {
+		args = map[string]any{}
+	}
 	key, err := LoadOrCreateKey()
 	if err != nil {
 		return nil, err
@@ -207,7 +208,7 @@ func call(pipe string, cmd string, args map[string]any, timeout time.Duration) (
 		mu.Unlock()
 		defer f.Close()
 
-		data, err := exchange(f, key, cmd, args)
+		data, err := exchange(f, pipe, key, cmd, args)
 		done <- outcome{data, err}
 	}()
 
@@ -232,35 +233,38 @@ func call(pipe string, cmd string, args map[string]any, timeout time.Duration) (
 // 帧序对齐 Python 侧 JsonBridgeServer._serve_connection：服务端先发 nonce，
 // 客户端回 auth，紧接着发请求行；服务端只在鉴权失败时回一行 ok:false，
 // 鉴权通过就直接用最终响应作答（没有中间 ack）。
-func exchange(f *os.File, key []byte, cmd string, args map[string]any) (json.RawMessage, error) {
+func exchange(f *os.File, pipe string, key []byte, cmd string, args map[string]any) (json.RawMessage, error) {
 	reader := bufio.NewReaderSize(f, 4096)
 
 	nonceLine, err := readLine(reader)
 	if err != nil {
-		return nil, newBridgeError("控制面握手失败（没收到 nonce）：%v", err)
+		return nil, newBridgeError("控制面 %s 握手失败（没收到 nonce）：%v", pipe, err)
 	}
 	var challenge struct {
 		Nonce string `json:"nonce"`
 	}
-	if err := json.Unmarshal(nonceLine, &challenge); err != nil || challenge.Nonce == "" {
-		return nil, newBridgeError("控制面握手失败（nonce 不是 JSON 对象）：%v", err)
+	if err := json.Unmarshal(nonceLine, &challenge); err != nil {
+		return nil, newBridgeError("控制面 %s 握手失败（nonce 不是 JSON 对象）：%v", pipe, err)
+	}
+	if challenge.Nonce == "" {
+		return nil, newBridgeError("控制面 %s 握手失败（nonce 是空的）。", pipe)
 	}
 
 	authLine, err := marshalLine(map[string]any{"auth": AuthToken(key, challenge.Nonce)})
 	if err != nil {
-		return nil, err
+		return nil, newBridgeError("控制面 %s：%v", pipe, err)
 	}
 	requestLine, err := marshalLine(map[string]any{"cmd": cmd, "args": args})
 	if err != nil {
-		return nil, err
+		return nil, newBridgeError("控制面 %s：%v", pipe, err)
 	}
 	if _, err := f.Write(append(authLine, requestLine...)); err != nil {
-		return nil, newBridgeError("控制面通信中断：%v", err)
+		return nil, newBridgeError("控制面 %s 通信中断：%v", pipe, err)
 	}
 
 	replyLine, err := readLine(reader)
 	if err != nil {
-		return nil, newBridgeError("控制面通信中断：%v", err)
+		return nil, newBridgeError("控制面 %s 通信中断：%v", pipe, err)
 	}
 	var reply struct {
 		OK    bool            `json:"ok"`
@@ -268,13 +272,13 @@ func exchange(f *os.File, key []byte, cmd string, args map[string]any) (json.Raw
 		Data  json.RawMessage `json:"data"`
 	}
 	if err := json.Unmarshal(replyLine, &reply); err != nil {
-		return nil, newBridgeError("控制面回的不是 JSON 对象：%v", err)
+		return nil, newBridgeError("控制面 %s 回的不是 JSON 对象：%v", pipe, err)
 	}
 	if !reply.OK {
 		if reply.Error != "" {
-			return nil, newBridgeError("控制面拒绝了 %s：%s", cmd, reply.Error)
+			return nil, newBridgeError("控制面 %s 拒绝了 %s：%s", pipe, cmd, reply.Error)
 		}
-		return nil, newBridgeError("控制面拒绝了 %s。", cmd)
+		return nil, newBridgeError("控制面 %s 拒绝了 %s。", pipe, cmd)
 	}
 	if len(reply.Data) == 0 || string(reply.Data) == "null" {
 		return json.RawMessage("{}"), nil
