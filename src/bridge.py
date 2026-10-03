@@ -751,3 +751,14 @@ def status_line() -> str:
     if data is None:
         return "连不上（驻留进程没在跑，或它没起来）"
     return "✅ 在听（pid %s，%s）" % (data.get("pid"), data.get("phase"))
+
+
+def json_status_line() -> str:
+    """给 `--check` 用的一行人话（NDJSON 通道那条）。与 status_line() 同口径。"""
+    try:
+        data = json_call("status", timeout=3.0)
+    except BridgeError:
+        return "连不上（驻留进程没在跑，或它还没挂上这条口子）"
+    if not isinstance(data, dict):
+        return "连上了，但没回状态（%r）" % (data,)
+    return "✅ 在听（pid %s，%s）" % (data.get("pid"), data.get("phase"))

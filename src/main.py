@@ -205,6 +205,9 @@ class VoicePill:
         # 控制面：外部进程（Codex 插件）靠它问状态、驱动录音、取走文字。
         # 见 bridge.py 顶部注释。
         self._bridge = bridge.BridgeServer(self._bridge_command)
+        # 第二张口子：与语言无关的 NDJSON 通道（见 docs/移植方案.md 第 19 节）。
+        # 同一个 handler、同一份密钥，只是换了线格式与管道名。
+        self._json_bridge = bridge.JsonBridgeServer(self._bridge_command)
 
     # ---------- 状态机 ----------
 
@@ -607,6 +610,7 @@ class VoicePill:
             self.hud.start()
         self.hotkeys.start()
         self._bridge.start()
+        self._json_bridge.start()
         self._quit_event = single_instance.open_quit_event()
 
         print("Voice Pill 已启动。")
@@ -620,6 +624,7 @@ class VoicePill:
                                  else "不限"))
         print("  Ctrl+C 退出；驻留形态用 `main.py --stop`")
         print("  控制面  ：%s" % bridge.pipe_name())
+        print("  JSON 通道：%s" % bridge.json_pipe_name())
 
         self._settings_mtime = _mtime(config.Settings.path())
         self._run_maintenance()          # 开机先清一次过期留存
@@ -770,6 +775,7 @@ class VoicePill:
         self._stopping = True
         self._stop.set()
         self._bridge.stop()
+        self._json_bridge.stop()
         self.hotkeys.stop()
         single_instance.close_handle(self._quit_event)
         self._quit_event = 0
@@ -892,6 +898,7 @@ def run_check(settings: config.Settings) -> int:
     print("  看门狗    ：%s" % ("✅ 在守着" if watching else "无（没人替你重拉）"))
     print("  锚点      ：%s" % anchor.status_line())
     print("  控制面    ：%s" % bridge.status_line())
+    print("  JSON 通道  ：%s" % bridge.json_status_line())
     print("  开机自启  ：%s" % autostart.status())
     log = config.app_log_path()
     size = os.path.getsize(log) if os.path.isfile(log) else 0
