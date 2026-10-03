@@ -228,6 +228,120 @@ def _wait(pred, timeout: float) -> bool:
     return bool(pred())
 
 
+_PIPE_ACCESS_DUPLEX = 0x00000003
+_PIPE_TYPE_BYTE = 0x00000000
+_PIPE_READMODE_BYTE = 0x00000000
+_PIPE_WAIT = 0x00000000
+_PIPE_UNLIMITED_INSTANCES = 255
+_ERROR_PIPE_CONNECTED = 535
+_LF = bytes((10,))
+
+
+def _read_at_least_lines(handle, wanted: int, timeout: float) -> bytes:
+    """读到出现 wanted 个换行为止，返回读到的**全部**字节（可能多带后面的行）。
+
+    不能按「一行」收：客户端把 auth 与请求连着写出来，一次 Peek/Read 就把两行
+    一起拿到了（实测踩过——按一行收会把请求那行留在第一次的返回里，服务端于是
+    永远等不到第二行）。
+    """
+    deadline = time.monotonic() + timeout
+    buf = bytearray()
+    while time.monotonic() < deadline:
+        available = wintypes.DWORD(0)
+        if not _k32.PeekNamedPipe(handle, None, 0, None,
+                                  ctypes.byref(available), None):
+            if ctypes.get_last_error() in _PIPE_GONE:
+                break
+            raise ctypes.WinError(ctypes.get_last_error())
+        if not available.value:
+            time.sleep(0.02)
+            continue
+        chunk = ctypes.create_string_buffer(min(available.value, 4096))
+        got = wintypes.DWORD(0)
+        if not _k32.ReadFile(handle, ctypes.cast(chunk, ctypes.c_void_p),
+                             len(chunk), ctypes.byref(got), None):
+            break
+        buf += chunk.raw[:got.value]
+        if buf.count(_LF) >= wanted:
+            return bytes(buf)
+    if buf:
+        return bytes(buf)
+    raise TimeoutError("等了 %.1f 秒没读到 %d 行" % (timeout, wanted))
+
+
+class RawServer:
+    """裸服务端：握手、收两行、回一行，**把客户端写来的原始行原样留下**。
+
+    桩 handler 拿到的是解析后的 dict，看不到编码，所以「客户端到底往管道里写了
+    什么字节」只能在这一层看。
+    """
+
+    def __init__(self, name: str, reply: dict, nonce: str = "0" * 32) -> None:
+        self.name = name
+        self.reply = reply
+        self.nonce = nonce
+        self.raw = b""                     # 客户端写来的全部原始字节
+        self.lines: list = []              # 按换行切开、去掉空段
+        self.error = None
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def _serve(self) -> None:
+        handle = 0
+        try:
+            handle = _k32.CreateNamedPipeW(
+                self.name, _PIPE_ACCESS_DUPLEX,
+                _PIPE_TYPE_BYTE | _PIPE_READMODE_BYTE | _PIPE_WAIT,
+                _PIPE_UNLIMITED_INSTANCES,
+                bridge.MAX_REQUEST_BYTES, bridge.MAX_REQUEST_BYTES, 0, None)
+            if not handle or handle == _INVALID_HANDLE:
+                raise ctypes.WinError(ctypes.get_last_error())
+            connected = bool(_k32.ConnectNamedPipe(handle, None))
+            err = ctypes.get_last_error()
+            if not connected and err != _ERROR_PIPE_CONNECTED:
+                raise ctypes.WinError(err)
+            bridge._write_all(handle, bridge._encode_line({"nonce": self.nonce}))
+            self.raw = _read_at_least_lines(handle, 2, 5.0)
+            self.lines = [p for p in self.raw.split(_LF) if p]
+            bridge._write_all(handle, bridge._encode_line(self.reply))
+            _k32.FlushFileBuffers(handle)
+            _k32.DisconnectNamedPipe(handle)
+        except BaseException as exc:                  # noqa: BLE001
+            self.error = repr(exc)
+        finally:
+            if handle:
+                _k32.CloseHandle(handle)
+
+    def join(self, timeout: float) -> None:
+        self._thread.join(timeout)
+
+
+def check_wire_bytes(ck: Checker) -> None:
+    """发出去的原始字节：紧凑 JSON、中文原样 UTF-8、一行一个换行（计划第 255 行）"""
+    _require_test_pipe()
+    server = RawServer(bridge.json_pipe_name(), {"ok": True, "data": {}})
+    server.start()
+    try:
+        data = bridge.json_call("speak", timeout=5.0, text="念这句", auto=False)
+        ck("往返还是通的", data == {}, data)
+        _wait(lambda: len(server.lines) >= 2 or server.error, 5)
+        ck("服务端没报错", server.error is None, server.error)
+        request = (server.lines[1] + _LF) if len(server.lines) > 1 else b""
+        expected = ('{"cmd":"speak","args":{"text":"念这句","auto":false}}'
+                    .encode("utf-8") + _LF)
+        ck("请求行就是那串紧凑 UTF-8 字节", request == expected, request)
+        ck("中文是原样 UTF-8，不是被转义成 ASCII",
+           bool(request) and not request.isascii(), request)
+        ck("键值之间没有多余空格（不是默认 separators）",
+           bytes((34, 58, 32)) not in request, request)
+        ck("行尾只有一个换行、没有 CR",
+           request.endswith(_LF) and bytes((13,)) not in request, request)
+    finally:
+        server.join(10)
+
+
 def check_roundtrip(ck: Checker) -> None:
     """正常路径：握手 -> status -> 拿到 handler 的返回"""
     seen: list = []
@@ -475,6 +589,8 @@ def check_client_oversize(ck: Checker) -> None:
 
 def check_client_timeout(ck: Checker) -> None:
     """收下请求但不回话：json_call 必须在 timeout 附近抛错，不许挂住"""
+    ck("客户端建连上限还是 3.0 秒（没被人偷偷放大）",
+       bridge.CONNECT_TIMEOUT_SECONDS == 3.0, bridge.CONNECT_TIMEOUT_SECONDS)
     saved = os.environ.get(bridge.JSON_PIPE_NAME_ENV)
     os.environ[bridge.JSON_PIPE_NAME_ENV] = \
         r"\\.\pipe\VoicePill-Json-selftest-slow-%d" % os.getpid()
@@ -495,8 +611,11 @@ def check_client_timeout(ck: Checker) -> None:
             except bridge.BridgeError as exc:
                 ck("不回话时 json_call 抛 BridgeError", True, str(exc))
             elapsed = time.monotonic() - started
-            ck("是在 1 秒那一档放弃的（1~4 秒）",
-               1.0 <= elapsed <= 4.0, "%.1fs" % elapsed)
+            # 上界必须**小于** json_call 里 join 的兜底（timeout + 2.0 = 3.0 秒）：
+            # 否则「读截止时间真的生效」和「只剩 join 兜底」都落在窗口里——
+            # 把读截止时间改成 30 秒，这条照样全绿（Mendel 实测过）。
+            ck("是在 1 秒那一档放弃的（0.9~2.0 秒，上界卡在 join 兜底之下）",
+               0.9 <= elapsed <= 2.0, "%.2fs" % elapsed)
             ck("放弃之后服务端还活着", server.alive)
         finally:
             server.stop()
@@ -517,13 +636,16 @@ def check_engine_absent(ck: Checker) -> None:
            "selftest" in bridge.json_pipe_name())
         started = time.monotonic()
         try:
-            bridge.json_call("status", timeout=3.0)
+            # 故意**不传** timeout：顺带走一遍 json_call 的默认值
+            # （CONNECT_TIMEOUT_SECONDS）。在此之前整份自测没有一处走过它。
+            bridge.json_call("status")
             ck("没人听的时候 json_call 抛 BridgeError", False, "没抛")
         except bridge.BridgeError as exc:
             ck("没人听的时候 json_call 抛 BridgeError", True, str(exc))
         elapsed = time.monotonic() - started
-        ck("按 timeout 收手（不是永挂：实测在 1~5 秒内报错）",
-           1.0 <= elapsed <= 5.0, "%.2fs" % elapsed)
+        # 上界同样卡在 join 兜底（3.0 + 2.0 = 5.0 秒）之下；下界贴着默认值。
+        ck("按默认的 3 秒收手（2.5~4.0 秒，不是永挂）",
+           2.5 <= elapsed <= 4.0, "%.2fs" % elapsed)
     finally:
         if saved is None:
             os.environ.pop(bridge.JSON_PIPE_NAME_ENV, None)
@@ -561,6 +683,7 @@ def main() -> int:
     print("=== NDJSON 控制面通道自测 ===")
     print("本次用的管道名：%s" % bridge.json_pipe_name())
     for fn in (check_pipe_name, check_auth_token, check_roundtrip,
+               check_wire_bytes,
                check_bad_clients, check_commands, check_client_oversize,
                check_client_timeout, check_engine_absent, check_concurrency,
                check_idle_timeout):
