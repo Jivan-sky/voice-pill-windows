@@ -1,0 +1,4 @@
+# GitHub 语言统计口径：vendor/ 下是上游引擎源码副本（codex-asr / FreeASR），
+# 属第三方代码，显式声明不计入语言统计。
+
+vendor/** linguist-vendored
