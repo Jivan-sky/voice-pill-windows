@@ -8,6 +8,9 @@ removed），而 command 型不依赖那条链路。
 输出：stdout 打一份 hook 输出 JSON（`hookSpecificOutput.additionalContext`）。
 没有待取文字时打 `{"continue": true}`——**任何情况下都要有输出**，钩子卡住
 会拖慢用户的每一次回车。
+
+stdout 必须是 UTF-8：Codex 按 UTF-8 读这一行，而这个进程的 stdout 是管道，
+Python 默认会退回 locale 编码（本机 GBK）。见下面 console.make_output_safe()。
 """
 from __future__ import annotations
 
@@ -22,6 +25,13 @@ LOG_PATH = Path(os.environ.get("LOCALAPPDATA") or os.environ.get("TEMP") or ".")
     / "VoicePill" / "plugin.log"
 
 sys.path.insert(0, str(PROJECT_SRC))
+
+# stdout 一旦是管道（Codex 就是这么读的），Python 会退回 locale 编码（本机 GBK），
+# 而 Codex 按 UTF-8 读。实测后果不是报错，是**中文提示语整段变成乱码**塞进模型
+# 上下文——静默生效，比崩掉更难发现。console.make_output_safe 是本工程统一的兜法。
+import console                      # noqa: E402
+
+console.make_output_safe()
 
 
 def _log(event: str, **fields: object) -> None:
