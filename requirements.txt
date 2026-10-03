@@ -1,0 +1,17 @@
+# Voice Pill for Windows —— 运行依赖
+# 安装：pip install -r requirements.txt
+
+# 麦克风采集（PortAudio 绑定，Windows 上直接走 WASAPI）
+sounddevice>=0.4.6
+
+# 重采样：设备原生 48k → 引擎要的 24k/16k
+numpy>=1.24
+scipy>=1.10          # 提供 resample_poly；缺了会退回 numpy 线性插值，音质略差
+
+# 热键、粘贴（SendInput）、剪贴板、窗口句柄：**全部走标准库 ctypes**，
+# 不需要 pynput，也不需要 pywin32。
+#
+# 热键为什么不用 pynput：本机主键是 Fn，上报为 scancode=0x63 / E0 / vkCode=0xFF。
+# 0xFF 是「无虚拟键映射」，pynput 会不会把它原样透出来是未知数；而裸
+# WH_KEYBOARD_LL 已由 tools/fn-probe.py 实测证明能稳定拿到 Fn 的按下与松开。
+# 少一个依赖、少一层不确定。见 src/hotkey.py 的模块说明。

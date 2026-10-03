@@ -1,0 +1,16 @@
+﻿# 虚拟环境与依赖
+.venv/
+venv/
+
+# Python 编译缓存
+__pycache__/
+*.py[cod]
+
+# 本地临时产物：测试音频、探针输出、一次性日志
+tmp/
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini

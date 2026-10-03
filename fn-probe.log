@@ -1,0 +1,305 @@
+========================================================================
+Fn 探针运行中，监听 90 秒。
+请依次按：
+  1) Fn 单独按 5 次以上
+  2) Fn + F1 / F2 / F3
+  3) Fn + 方向键
+  4) Fn + Esc
+  5) 普通字母 A 和 B 各按一次（对照组，证明探针在工作）
+========================================================================
+
+11.52s  HOOK  [HOOK     ] scancode=0x63 E0  vkCode=0xFF      
+11.53s  RAW   [RAW 键盘] scancode=0x63 E0    vkCode=0xFF        msg=0x0100
+11.82s  HOOK  [HOOK     ] scancode=0x63 E0  vkCode=0xFF      
+11.83s  RAW   [RAW 键盘] scancode=0x63 E0    vkCode=0xFF        msg=0x0100
+12.15s  HOOK  [HOOK     ] scancode=0x63 E0  vkCode=0xFF      
+12.16s  RAW   [RAW 键盘] scancode=0x63 E0    vkCode=0xFF        msg=0x0100
+12.59s  HOOK  [HOOK     ] scancode=0x63 E0  vkCode=0xFF      
+12.60s  RAW   [RAW 键盘] scancode=0x63 E0    vkCode=0xFF        msg=0x0100
+12.88s  HOOK  [HOOK     ] scancode=0x63 E0  vkCode=0xFF      
+12.89s  RAW   [RAW 键盘] scancode=0x63 E0    vkCode=0xFF        msg=0x0100
+13.23s  HOOK  [HOOK     ] scancode=0x63 E0  vkCode=0xFF      
+13.24s  RAW   [RAW 键盘] scancode=0x63 E0    vkCode=0xFF        msg=0x0100
+13.76s  HOOK  [HOOK     ] scancode=0x63 E0  vkCode=0xFF      
+13.78s  RAW   [RAW 键盘] scancode=0x63 E0    vkCode=0xFF        msg=0x0100
+14.08s  HOOK  [HOOK     ] scancode=0x63 E0  vkCode=0xFF      
+14.09s  RAW   [RAW 键盘] scancode=0x63 E0    vkCode=0xFF        msg=0x0100
+14.43s  HOOK  [HOOK     ] scancode=0x63 E0  vkCode=0xFF      
+14.44s  RAW   [RAW 键盘] scancode=0x63 E0    vkCode=0xFF        msg=0x0100
+15.39s  HOOK  [HOOK     ] scancode=0x63 E0  vkCode=0xFF      
+15.40s  RAW   [RAW 键盘] scancode=0x63 E0    vkCode=0xFF        msg=0x0100
+15.74s  HOOK  [HOOK     ] scancode=0x63 E0  vkCode=0xFF      
+15.75s  RAW   [RAW 键盘] scancode=0x63 E0    vkCode=0xFF        msg=0x0100
+16.04s  HOOK  [HOOK     ] scancode=0x63 E0  vkCode=0xFF      
+16.05s  RAW   [RAW 键盘] scancode=0x63 E0    vkCode=0xFF        msg=0x0100
+16.36s  HOOK  [HOOK     ] scancode=0x63 E0  vkCode=0xFF      
+16.37s  RAW   [RAW 键盘] scancode=0x63 E0    vkCode=0xFF        msg=0x0100
+23.68s  HOOK  [HOOK     ] scancode=0x31     vkCode=0x4E N    
+23.69s  RAW   [RAW 键盘] scancode=0x31       vkCode=0x4E N      msg=0x0100
+23.92s  HOOK  [HOOK     ] scancode=0x17     vkCode=0x49 I    
+23.93s  RAW   [RAW 键盘] scancode=0x17       vkCode=0x49 I      msg=0x0100
+24.29s  HOOK  [HOOK     ] scancode=0x02     vkCode=0x31 1    
+24.30s  RAW   [RAW 键盘] scancode=0x02       vkCode=0x31 1      msg=0x0100
+24.54s  HOOK  [HOOK     ] scancode=0x24     vkCode=0x4A J    
+24.55s  RAW   [RAW 键盘] scancode=0x24       vkCode=0x4A J      msg=0x0100
+24.64s  HOOK  [HOOK     ] scancode=0x17     vkCode=0x49 I    
+24.66s  RAW   [RAW 键盘] scancode=0x17       vkCode=0x49 I      msg=0x0100
+24.89s  HOOK  [HOOK     ] scancode=0x24     vkCode=0x4A J    
+24.90s  RAW   [RAW 键盘] scancode=0x24       vkCode=0x4A J      msg=0x0100
+24.97s  HOOK  [HOOK     ] scancode=0x17     vkCode=0x49 I    
+24.98s  RAW   [RAW 键盘] scancode=0x17       vkCode=0x49 I      msg=0x0100
+25.16s  HOOK  [HOOK     ] scancode=0x31     vkCode=0x4E N    
+25.17s  RAW   [RAW 键盘] scancode=0x31       vkCode=0x4E N      msg=0x0100
+25.44s  HOOK  [HOOK     ] scancode=0x02     vkCode=0x31 1    
+25.45s  RAW   [RAW 键盘] scancode=0x02       vkCode=0x31 1      msg=0x0100
+25.90s  HOOK  [HOOK     ] scancode=0x0E     vkCode=0x08      
+25.91s  RAW   [RAW 键盘] scancode=0x0E       vkCode=0x08        msg=0x0100
+26.04s  HOOK  [HOOK     ] scancode=0x0E     vkCode=0x08      
+26.05s  RAW   [RAW 键盘] scancode=0x0E       vkCode=0x08        msg=0x0100
+26.31s  HOOK  [HOOK     ] scancode=0x24     vkCode=0x4A J    
+26.32s  RAW   [RAW 键盘] scancode=0x24       vkCode=0x4A J      msg=0x0100
+26.42s  HOOK  [HOOK     ] scancode=0x17     vkCode=0x49 I    
+26.43s  RAW   [RAW 键盘] scancode=0x17       vkCode=0x49 I      msg=0x0100
+26.60s  HOOK  [HOOK     ] scancode=0x31     vkCode=0x4E N    
+26.61s  RAW   [RAW 键盘] scancode=0x31       vkCode=0x4E N      msg=0x0100
+26.81s  HOOK  [HOOK     ] scancode=0x24     vkCode=0x4A J    
+26.82s  RAW   [RAW 键盘] scancode=0x24       vkCode=0x4A J      msg=0x0100
+26.85s  HOOK  [HOOK     ] scancode=0x17     vkCode=0x49 I    
+26.86s  RAW   [RAW 键盘] scancode=0x17       vkCode=0x49 I      msg=0x0100
+27.03s  HOOK  [HOOK     ] scancode=0x31     vkCode=0x4E N    
+27.03s  RAW   [RAW 键盘] scancode=0x31       vkCode=0x4E N      msg=0x0100
+27.41s  HOOK  [HOOK     ] scancode=0x02     vkCode=0x31 1    
+27.42s  RAW   [RAW 键盘] scancode=0x02       vkCode=0x31 1      msg=0x0100
+27.63s  HOOK  [HOOK     ] scancode=0x25     vkCode=0x4B K    
+27.65s  RAW   [RAW 键盘] scancode=0x25       vkCode=0x4B K      msg=0x0100
+27.79s  HOOK  [HOOK     ] scancode=0x25     vkCode=0x4B K    
+27.80s  RAW   [RAW 键盘] scancode=0x25       vkCode=0x4B K      msg=0x0100
+28.10s  HOOK  [HOOK     ] scancode=0x02     vkCode=0x31 1    
+28.11s  RAW   [RAW 键盘] scancode=0x02       vkCode=0x31 1      msg=0x0100
+29.08s  HOOK  [HOOK     ] scancode=0x3A     vkCode=0x14      
+29.09s  RAW   [RAW 键盘] scancode=0x3A       vkCode=0x14        msg=0x0100
+29.84s  HOOK  [HOOK     ] scancode=0x3A     vkCode=0x14      
+29.85s  RAW   [RAW 键盘] scancode=0x3A       vkCode=0x14        msg=0x0100
+30.19s  HOOK  [HOOK     ] scancode=0x21     vkCode=0x46 F    
+30.20s  RAW   [RAW 键盘] scancode=0x21       vkCode=0x46 F      msg=0x0100
+30.41s  HOOK  [HOOK     ] scancode=0x31     vkCode=0x4E N    
+30.42s  RAW   [RAW 键盘] scancode=0x31       vkCode=0x4E N      msg=0x0100
+30.68s  HOOK  [HOOK     ] scancode=0x2A     vkCode=0xA0      
+30.69s  RAW   [RAW 键盘] scancode=0x2A       vkCode=0x10        msg=0x0100
+30.87s  HOOK  [HOOK     ] scancode=0x2A     vkCode=0xA0      
+30.89s  RAW   [RAW 键盘] scancode=0x2A       vkCode=0x10        msg=0x0100
+31.17s  HOOK  [HOOK     ] scancode=0x20     vkCode=0x44 D    
+31.18s  RAW   [RAW 键盘] scancode=0x20       vkCode=0x44 D      msg=0x0100
+31.40s  HOOK  [HOOK     ] scancode=0x02     vkCode=0x31 1    
+31.41s  RAW   [RAW 键盘] scancode=0x02       vkCode=0x31 1      msg=0x0100
+32.51s  HOOK  [HOOK     ] scancode=0x33     vkCode=0xBC      
+32.52s  RAW   [RAW 键盘] scancode=0x33       vkCode=0xBC        msg=0x0100
+34.69s  HOOK  [HOOK     ] scancode=0x21     vkCode=0x46 F    
+34.70s  RAW   [RAW 键盘] scancode=0x21       vkCode=0x46 F      msg=0x0100
+34.94s  HOOK  [HOOK     ] scancode=0x31     vkCode=0x4E N    
+34.95s  HOOK  [HOOK     ] scancode=0x30     vkCode=0x42 B    
+34.95s  RAW   [RAW 键盘] scancode=0x31       vkCode=0x4E N      msg=0x0100
+34.95s  RAW   [RAW 键盘] scancode=0x30       vkCode=0x42 B      msg=0x0100
+35.49s  HOOK  [HOOK     ] scancode=0x0E     vkCode=0x08      
+35.50s  RAW   [RAW 键盘] scancode=0x0E       vkCode=0x08        msg=0x0100
+36.44s  HOOK  [HOOK     ] scancode=0x36 E0  vkCode=0xA1      
+36.46s  RAW   [RAW 键盘] scancode=0x36       vkCode=0x10        msg=0x0100
+37.29s  HOOK  [HOOK     ] scancode=0x36 E0  vkCode=0xA1      
+37.30s  RAW   [RAW 键盘] scancode=0x36       vkCode=0x10        msg=0x0100
+37.79s  HOOK  [HOOK     ] scancode=0x36 E0  vkCode=0xA1      
+37.80s  RAW   [RAW 键盘] scancode=0x36       vkCode=0x10        msg=0x0100
+37.82s  HOOK  [HOOK     ] scancode=0x36 E0  vkCode=0xA1      
+37.83s  RAW   [RAW 键盘] scancode=0x36       vkCode=0x10        msg=0x0100
+37.85s  HOOK  [HOOK     ] scancode=0x36 E0  vkCode=0xA1      
+37.86s  RAW   [RAW 键盘] scancode=0x36       vkCode=0x10        msg=0x0100
+37.88s  HOOK  [HOOK     ] scancode=0x36 E0  vkCode=0xA1      
+37.89s  RAW   [RAW 键盘] scancode=0x36       vkCode=0x10        msg=0x0100
+37.91s  HOOK  [HOOK     ] scancode=0x36 E0  vkCode=0xA1      
+37.93s  RAW   [RAW 键盘] scancode=0x36       vkCode=0x10        msg=0x0100
+37.95s  HOOK  [HOOK     ] scancode=0x36 E0  vkCode=0xA1      
+37.96s  RAW   [RAW 键盘] scancode=0x36       vkCode=0x10        msg=0x0100
+37.98s  HOOK  [HOOK     ] scancode=0x36 E0  vkCode=0xA1      
+37.99s  RAW   [RAW 键盘] scancode=0x36       vkCode=0x10        msg=0x0100
+38.02s  HOOK  [HOOK     ] scancode=0x36 E0  vkCode=0xA1      
+38.03s  RAW   [RAW 键盘] scancode=0x36       vkCode=0x10        msg=0x0100
+38.05s  HOOK  [HOOK     ] scancode=0x36 E0  vkCode=0xA1      
+38.06s  RAW   [RAW 键盘] scancode=0x36       vkCode=0x10        msg=0x0100
+38.08s  HOOK  [HOOK     ] scancode=0x36 E0  vkCode=0xA1      
+38.09s  RAW   [RAW 键盘] scancode=0x36       vkCode=0x10        msg=0x0100
+38.11s  HOOK  [HOOK     ] scancode=0x36 E0  vkCode=0xA1      
+38.13s  RAW   [RAW 键盘] scancode=0x36       vkCode=0x10        msg=0x0100
+38.15s  HOOK  [HOOK     ] scancode=0x36 E0  vkCode=0xA1      
+38.16s  RAW   [RAW 键盘] scancode=0x36       vkCode=0x10        msg=0x0100
+38.18s  HOOK  [HOOK     ] scancode=0x36 E0  vkCode=0xA1      
+38.19s  RAW   [RAW 键盘] scancode=0x36       vkCode=0x10        msg=0x0100
+38.21s  HOOK  [HOOK     ] scancode=0x36 E0  vkCode=0xA1      
+38.22s  RAW   [RAW 键盘] scancode=0x36       vkCode=0x10        msg=0x0100
+38.24s  HOOK  [HOOK     ] scancode=0x36 E0  vkCode=0xA1      
+38.25s  RAW   [RAW 键盘] scancode=0x36       vkCode=0x10        msg=0x0100
+38.27s  HOOK  [HOOK     ] scancode=0x0D     vkCode=0xBB      
+38.28s  RAW   [RAW 键盘] scancode=0x0D       vkCode=0xBB        msg=0x0100
+40.39s  HOOK  [HOOK     ] scancode=0x3A     vkCode=0x14      
+40.40s  RAW   [RAW 键盘] scancode=0x3A       vkCode=0x14        msg=0x0100
+41.85s  HOOK  [HOOK     ] scancode=0x12     vkCode=0x45 E    
+41.86s  RAW   [RAW 键盘] scancode=0x12       vkCode=0x45 E      msg=0x0100
+42.18s  HOOK  [HOOK     ] scancode=0x3A     vkCode=0x14      
+42.19s  RAW   [RAW 键盘] scancode=0x3A       vkCode=0x14        msg=0x0100
+42.73s  HOOK  [HOOK     ] scancode=0x1F     vkCode=0x53 S    
+42.74s  RAW   [RAW 键盘] scancode=0x1F       vkCode=0x53 S      msg=0x0100
+43.34s  HOOK  [HOOK     ] scancode=0x2E     vkCode=0x43 C    
+43.35s  RAW   [RAW 键盘] scancode=0x2E       vkCode=0x43 C      msg=0x0100
+43.60s  HOOK  [HOOK     ] scancode=0x3A     vkCode=0x14      
+43.61s  RAW   [RAW 键盘] scancode=0x3A       vkCode=0x14        msg=0x0100
+44.22s  HOOK  [HOOK     ] scancode=0x14     vkCode=0x54 T    
+44.23s  RAW   [RAW 键盘] scancode=0x14       vkCode=0x54 T      msg=0x0100
+44.33s  HOOK  [HOOK     ] scancode=0x15     vkCode=0x59 Y    
+44.34s  RAW   [RAW 键盘] scancode=0x15       vkCode=0x59 Y      msg=0x0100
+44.76s  HOOK  [HOOK     ] scancode=0x0E     vkCode=0x08      
+44.77s  RAW   [RAW 键盘] scancode=0x0E       vkCode=0x08        msg=0x0100
+44.95s  HOOK  [HOOK     ] scancode=0x0E     vkCode=0x08      
+44.96s  RAW   [RAW 键盘] scancode=0x0E       vkCode=0x08        msg=0x0100
+45.65s  HOOK  [HOOK     ] scancode=0x2A     vkCode=0xA0      
+45.66s  RAW   [RAW 键盘] scancode=0x2A       vkCode=0x10        msg=0x0100
+45.82s  RAW   [RAW 键盘] scancode=0x00       vkCode=0x14        msg=0x0100
+45.99s  HOOK  [HOOK     ] scancode=0x1F     vkCode=0x53 S    
+46.00s  RAW   [RAW 键盘] scancode=0x1F       vkCode=0x53 S      msg=0x0100
+46.15s  HOOK  [HOOK     ] scancode=0x23     vkCode=0x48 H    
+46.16s  RAW   [RAW 键盘] scancode=0x23       vkCode=0x48 H      msg=0x0100
+46.22s  HOOK  [HOOK     ] scancode=0x17     vkCode=0x49 I    
+46.23s  RAW   [RAW 键盘] scancode=0x17       vkCode=0x49 I      msg=0x0100
+46.44s  HOOK  [HOOK     ] scancode=0x02     vkCode=0x31 1    
+46.45s  RAW   [RAW 键盘] scancode=0x02       vkCode=0x31 1      msg=0x0100
+46.68s  HOOK  [HOOK     ] scancode=0x15     vkCode=0x59 Y    
+46.69s  RAW   [RAW 键盘] scancode=0x15       vkCode=0x59 Y      msg=0x0100
+46.84s  HOOK  [HOOK     ] scancode=0x17     vkCode=0x49 I    
+46.85s  RAW   [RAW 键盘] scancode=0x17       vkCode=0x49 I      msg=0x0100
+46.99s  HOOK  [HOOK     ] scancode=0x16     vkCode=0x55 U    
+47.00s  RAW   [RAW 键盘] scancode=0x16       vkCode=0x55 U      msg=0x0100
+47.63s  HOOK  [HOOK     ] scancode=0x0E     vkCode=0x08      
+47.64s  RAW   [RAW 键盘] scancode=0x0E       vkCode=0x08        msg=0x0100
+48.12s  HOOK  [HOOK     ] scancode=0x0E     vkCode=0x08      
+48.13s  RAW   [RAW 键盘] scancode=0x0E       vkCode=0x08        msg=0x0100
+48.41s  HOOK  [HOOK     ] scancode=0x18     vkCode=0x4F O    
+48.42s  RAW   [RAW 键盘] scancode=0x18       vkCode=0x4F O      msg=0x0100
+48.62s  HOOK  [HOOK     ] scancode=0x15     vkCode=0x59 Y    
+48.62s  HOOK  [HOOK     ] scancode=0x16     vkCode=0x55 U    
+48.62s  RAW   [RAW 键盘] scancode=0x15       vkCode=0x59 Y      msg=0x0100
+48.62s  RAW   [RAW 键盘] scancode=0x16       vkCode=0x55 U      msg=0x0100
+48.84s  HOOK  [HOOK     ] scancode=0x02     vkCode=0x31 1    
+48.85s  RAW   [RAW 键盘] scancode=0x02       vkCode=0x31 1      msg=0x0100
+49.66s  HOOK  [HOOK     ] scancode=0x0E     vkCode=0x08      
+49.67s  RAW   [RAW 键盘] scancode=0x0E       vkCode=0x08        msg=0x0100
+49.83s  HOOK  [HOOK     ] scancode=0x0E     vkCode=0x08      
+49.85s  RAW   [RAW 键盘] scancode=0x0E       vkCode=0x08        msg=0x0100
+50.75s  HOOK  [HOOK     ] scancode=0x15     vkCode=0x59 Y    
+50.76s  RAW   [RAW 键盘] scancode=0x15       vkCode=0x59 Y      msg=0x0100
+50.95s  HOOK  [HOOK     ] scancode=0x17     vkCode=0x49 I    
+50.96s  RAW   [RAW 键盘] scancode=0x17       vkCode=0x49 I      msg=0x0100
+51.11s  HOOK  [HOOK     ] scancode=0x15     vkCode=0x59 Y    
+51.12s  RAW   [RAW 键盘] scancode=0x15       vkCode=0x59 Y      msg=0x0100
+51.73s  HOOK  [HOOK     ] scancode=0x0E     vkCode=0x08      
+51.74s  RAW   [RAW 键盘] scancode=0x0E       vkCode=0x08        msg=0x0100
+51.91s  HOOK  [HOOK     ] scancode=0x0E     vkCode=0x08      
+51.92s  RAW   [RAW 键盘] scancode=0x0E       vkCode=0x08        msg=0x0100
+52.48s  HOOK  [HOOK     ] scancode=0x18     vkCode=0x4F O    
+52.49s  RAW   [RAW 键盘] scancode=0x18       vkCode=0x4F O      msg=0x0100
+52.68s  HOOK  [HOOK     ] scancode=0x16     vkCode=0x55 U    
+52.69s  RAW   [RAW 键盘] scancode=0x16       vkCode=0x55 U      msg=0x0100
+52.93s  HOOK  [HOOK     ] scancode=0x02     vkCode=0x31 1    
+52.94s  RAW   [RAW 键盘] scancode=0x02       vkCode=0x31 1      msg=0x0100
+53.27s  HOOK  [HOOK     ] scancode=0x2C     vkCode=0x5A Z    
+53.28s  RAW   [RAW 键盘] scancode=0x2C       vkCode=0x5A Z      msg=0x0100
+53.38s  HOOK  [HOOK     ] scancode=0x16     vkCode=0x55 U    
+53.39s  RAW   [RAW 键盘] scancode=0x16       vkCode=0x55 U      msg=0x0100
+53.52s  HOOK  [HOOK     ] scancode=0x18     vkCode=0x4F O    
+53.53s  RAW   [RAW 键盘] scancode=0x18       vkCode=0x4F O      msg=0x0100
+53.81s  HOOK  [HOOK     ] scancode=0x15     vkCode=0x59 Y    
+53.82s  RAW   [RAW 键盘] scancode=0x15       vkCode=0x59 Y      msg=0x0100
+54.04s  HOOK  [HOOK     ] scancode=0x18     vkCode=0x4F O    
+54.05s  RAW   [RAW 键盘] scancode=0x18       vkCode=0x4F O      msg=0x0100
+54.12s  HOOK  [HOOK     ] scancode=0x31     vkCode=0x4E N    
+54.13s  RAW   [RAW 键盘] scancode=0x31       vkCode=0x4E N      msg=0x0100
+54.21s  HOOK  [HOOK     ] scancode=0x22     vkCode=0x47 G    
+54.22s  RAW   [RAW 键盘] scancode=0x22       vkCode=0x47 G      msg=0x0100
+54.67s  HOOK  [HOOK     ] scancode=0x02     vkCode=0x31 1    
+54.68s  RAW   [RAW 键盘] scancode=0x02       vkCode=0x31 1      msg=0x0100
+55.00s  HOOK  [HOOK     ] scancode=0x20     vkCode=0x44 D    
+55.01s  RAW   [RAW 键盘] scancode=0x20       vkCode=0x44 D      msg=0x0100
+55.39s  HOOK  [HOOK     ] scancode=0x02     vkCode=0x31 1    
+55.40s  RAW   [RAW 键盘] scancode=0x02       vkCode=0x31 1      msg=0x0100
+55.70s  HOOK  [HOOK     ] scancode=0x1C     vkCode=0x0D      
+55.71s  RAW   [RAW 键盘] scancode=0x1C       vkCode=0x0D        msg=0x0100
+87.11s  HOOK  [HOOK     ] scancode=0x4D E0  vkCode=0x27 Right
+87.12s  RAW   [RAW 键盘] scancode=0x4D E0    vkCode=0x27 Right  msg=0x0100
+87.42s  HOOK  [HOOK     ] scancode=0x36 E0  vkCode=0xA1      
+87.44s  RAW   [RAW 键盘] scancode=0x36       vkCode=0x10        msg=0x0100
+87.83s  HOOK  [HOOK     ] scancode=0x1C     vkCode=0x0D      
+87.85s  RAW   [RAW 键盘] scancode=0x1C       vkCode=0x0D        msg=0x0100
+
+========================================================================
+汇总：共捕获 227 条事件
+========================================================================
+
+--- HOOK 通道（低级键盘钩子）去重 ---
+  [HOOK     ] scancode=0x02     vkCode=0x31 1    
+  [HOOK     ] scancode=0x0D     vkCode=0xBB      
+  [HOOK     ] scancode=0x0E     vkCode=0x08      
+  [HOOK     ] scancode=0x12     vkCode=0x45 E    
+  [HOOK     ] scancode=0x14     vkCode=0x54 T    
+  [HOOK     ] scancode=0x15     vkCode=0x59 Y    
+  [HOOK     ] scancode=0x16     vkCode=0x55 U    
+  [HOOK     ] scancode=0x17     vkCode=0x49 I    
+  [HOOK     ] scancode=0x18     vkCode=0x4F O    
+  [HOOK     ] scancode=0x1C     vkCode=0x0D      
+  [HOOK     ] scancode=0x1F     vkCode=0x53 S    
+  [HOOK     ] scancode=0x20     vkCode=0x44 D    
+  [HOOK     ] scancode=0x21     vkCode=0x46 F    
+  [HOOK     ] scancode=0x22     vkCode=0x47 G    
+  [HOOK     ] scancode=0x23     vkCode=0x48 H    
+  [HOOK     ] scancode=0x24     vkCode=0x4A J    
+  [HOOK     ] scancode=0x25     vkCode=0x4B K    
+  [HOOK     ] scancode=0x2A     vkCode=0xA0      
+  [HOOK     ] scancode=0x2C     vkCode=0x5A Z    
+  [HOOK     ] scancode=0x2E     vkCode=0x43 C    
+  [HOOK     ] scancode=0x30     vkCode=0x42 B    
+  [HOOK     ] scancode=0x31     vkCode=0x4E N    
+  [HOOK     ] scancode=0x33     vkCode=0xBC      
+  [HOOK     ] scancode=0x36 E0  vkCode=0xA1      
+  [HOOK     ] scancode=0x3A     vkCode=0x14      
+  [HOOK     ] scancode=0x4D E0  vkCode=0x27 Right
+  [HOOK     ] scancode=0x63 E0  vkCode=0xFF      
+
+--- RAW 通道（HID 原始上报）去重 ---
+  [RAW 键盘] scancode=0x00       vkCode=0x14        msg=0x0100
+  [RAW 键盘] scancode=0x02       vkCode=0x31 1      msg=0x0100
+  [RAW 键盘] scancode=0x0D       vkCode=0xBB        msg=0x0100
+  [RAW 键盘] scancode=0x0E       vkCode=0x08        msg=0x0100
+  [RAW 键盘] scancode=0x12       vkCode=0x45 E      msg=0x0100
+  [RAW 键盘] scancode=0x14       vkCode=0x54 T      msg=0x0100
+  [RAW 键盘] scancode=0x15       vkCode=0x59 Y      msg=0x0100
+  [RAW 键盘] scancode=0x16       vkCode=0x55 U      msg=0x0100
+  [RAW 键盘] scancode=0x17       vkCode=0x49 I      msg=0x0100
+  [RAW 键盘] scancode=0x18       vkCode=0x4F O      msg=0x0100
+  [RAW 键盘] scancode=0x1C       vkCode=0x0D        msg=0x0100
+  [RAW 键盘] scancode=0x1F       vkCode=0x53 S      msg=0x0100
+  [RAW 键盘] scancode=0x20       vkCode=0x44 D      msg=0x0100
+  [RAW 键盘] scancode=0x21       vkCode=0x46 F      msg=0x0100
+  [RAW 键盘] scancode=0x22       vkCode=0x47 G      msg=0x0100
+  [RAW 键盘] scancode=0x23       vkCode=0x48 H      msg=0x0100
+  [RAW 键盘] scancode=0x24       vkCode=0x4A J      msg=0x0100
+  [RAW 键盘] scancode=0x25       vkCode=0x4B K      msg=0x0100
+  [RAW 键盘] scancode=0x2A       vkCode=0x10        msg=0x0100
+  [RAW 键盘] scancode=0x2C       vkCode=0x5A Z      msg=0x0100
+  [RAW 键盘] scancode=0x2E       vkCode=0x43 C      msg=0x0100
+  [RAW 键盘] scancode=0x30       vkCode=0x42 B      msg=0x0100
+  [RAW 键盘] scancode=0x31       vkCode=0x4E N      msg=0x0100
+  [RAW 键盘] scancode=0x33       vkCode=0xBC        msg=0x0100
+  [RAW 键盘] scancode=0x36       vkCode=0x10        msg=0x0100
+  [RAW 键盘] scancode=0x3A       vkCode=0x14        msg=0x0100
+  [RAW 键盘] scancode=0x4D E0    vkCode=0x27 Right  msg=0x0100
+  [RAW 键盘] scancode=0x63 E0    vkCode=0xFF        msg=0x0100
+
+--- 判读 ---
+  ✅ 对照组 A/B 键已抓到 → 探针工作正常。
+  ⚠️  出现非标准项（下方），重点看这些是不是 Fn：
+       [RAW 键盘] scancode=0x00       vkCode=0x14        msg=0x0100
