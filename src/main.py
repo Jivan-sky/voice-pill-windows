@@ -508,6 +508,8 @@ class VoicePill:
             self._last_quick_tap = 0.0
             self._capture_armed = not self._capture_armed
             armed = self._capture_armed
+        print("[落库标记] %s" % ("已打上：下一次口述直接落 Inbox"
+                                  if armed else "已取消"), file=sys.stderr)
         if not self.settings.hud_enabled:
             return
         self._hud_flash("下次口述 → 落 Inbox" if armed else "落库标记：关",
