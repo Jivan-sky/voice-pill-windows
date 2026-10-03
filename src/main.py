@@ -149,7 +149,10 @@ class VoicePill:
         self._transcript = ""
         self._last_error = ""
         # 最近几次成功的转写，供控制面 `take` 取走（Codex 插件那侧用）。
-        # 只在内存里，进程一退就没了——说过的话不该在磁盘上多留一份。
+        # 每项是 (转写时间戳, 文字)：队列是被动的——它只在用户下一次往 Codex
+        # 发消息时才被取走，所以得靠时间戳滤掉过了保鲜期的旧话（见
+        # _drain_pending）。只在内存里，进程一退就没了——说过的话不该在
+        # 磁盘上多留一份。
         self._pending = collections.deque(maxlen=PENDING_TRANSCRIPTS)
         self._started_at = time.time()
         # 退出信号。见 _shutdown 的注释：不能再用 sys.exit()。
@@ -332,7 +335,8 @@ class VoicePill:
 
         self._transcript = text or ""
         if self._transcript:
-            self._pending.append(self._transcript)
+            with self._lock:
+                self._pending.append((time.time(), self._transcript))
         if self.settings.auto_paste and self._transcript:
             try:
                 paste_mod.paste(self._transcript, self._target_hwnd)
@@ -364,9 +368,8 @@ class VoicePill:
         if cmd == "status":
             return self._bridge_status()
         if cmd == "take":
-            items = list(self._pending)
-            self._pending.clear()
-            return {"texts": items, "count": len(items)}
+            texts = self._drain_pending()
+            return {"texts": texts, "count": len(texts)}
         if cmd == "start":
             self.on_start()
         elif cmd == "stop":
@@ -374,6 +377,36 @@ class VoicePill:
         elif cmd == "cancel":
             self.on_cancel()
         return self._bridge_status()
+
+    def _pending_ttl_seconds(self) -> float:
+        """待取文字的保鲜期（秒）。settings 里 0 = 不过期。"""
+        return max(0.0, float(self.settings.pending_ttl_minutes)) * 60.0
+
+    def _drain_pending(self) -> list:
+        """取走队列里所有文字（旧→新），顺带丢掉过了保鲜期的。
+
+        为什么要有保鲜期：队列里的字只在用户下一次往 Codex 发消息时才被
+        取走。没有时效的话，几天前随口说的一句会在几天后被一起塞进一轮
+        对话，和当时真正的意图搅在一起。取走语义照旧——过期的那些既不
+        返回、也不再留在队列里。
+        """
+        ttl = self._pending_ttl_seconds()
+        cutoff = time.time() - ttl if ttl > 0 else None
+        # 一起持锁：list 和 clear 之间若插进一次 append，那条会被漏掉。
+        with self._lock:
+            items = list(self._pending)
+            self._pending.clear()
+        return [text for stamp, text in items
+                if cutoff is None or stamp >= cutoff]
+
+    def _pending_count(self) -> int:
+        """还没过保鲜期的条数（`status` 用）。只报数，不动队列。"""
+        ttl = self._pending_ttl_seconds()
+        if ttl <= 0:
+            return len(self._pending)
+        cutoff = time.time() - ttl
+        with self._lock:
+            return sum(1 for stamp, _ in self._pending if stamp >= cutoff)
 
     def _bridge_status(self) -> dict:
         provider = providers.get(self.settings.provider)
@@ -385,7 +418,7 @@ class VoicePill:
             "hotkey": self.settings.primary_key,
             "hotkey_alive": bool(self.hotkeys.alive),
             "hud": self.settings.hud_enabled,
-            "pending": len(self._pending),
+            "pending": self._pending_count(),
             "uptime_seconds": round(time.time() - self._started_at, 1),
         }
 

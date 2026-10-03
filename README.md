@@ -121,8 +121,9 @@ Voice Pill 的 Windows 移植工程。按住热键说话，松手把文字粘到
 **同一时刻只允许一个实例**：两个实例都会采到同一支麦克风、都会粘贴，一次说话会被
 粘两遍（实测过）。第二个实例会被直接拒掉（exit code 3），并告诉你怎么停掉前一个。
 
-`settings.json` 里两个新开关：`max_record_seconds`（单次录音上限，默认 120，
-0 = 不限）、`retention_days`（失败录音与转写日志保留几天，默认 7，0 = 不清理）。
+`settings.json` 里三个新开关：`max_record_seconds`（单次录音上限，默认 120，
+0 = 不限）、`retention_days`（失败录音与转写日志保留几天，默认 7，0 = 不清理）、
+`pending_ttl_minutes`（待取文字的保鲜期，默认 30，0 = 不过期）。
 
 ## 从别的进程用它（控制面）
 
@@ -138,7 +139,9 @@ bridge.call("status")   # {pid, phase, provider, hotkey_alive, pending, ...}
 bridge.call("take")     # {texts: [...], count: n} —— 取走并清空
 ```
 
-五个命令：`status` / `start` / `stop` / `cancel` / `take`。`take` 是**取走**语义。
+五个命令：`status` / `start` / `stop` / `cancel` / `take`。`take` 是**取走**语义，
+且只返回保鲜期内的字：`pending_ttl_minutes`（默认 30 分钟）之外的旧话直接丢弃，
+不会再注入到下一轮对话里。
 
 ## 许可
 

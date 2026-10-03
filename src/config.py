@@ -24,6 +24,10 @@ RETENTION_DAYS = 7
 # 单次录音的默认上限（秒）。0 = 不限。见 main.RecordWatchdog 的注释。
 MAX_RECORD_SECONDS = 120
 
+# 「待取文字」的保鲜期（分钟）。转写出来超过这个时长的字，控制面 `take`
+# 不再返回（直接丢弃）。见 main.VoicePill._drain_pending。0 = 不过期。
+PENDING_TTL_MINUTES = 30
+
 
 @dataclass(frozen=True)
 class KeySpec:
@@ -197,6 +201,7 @@ class Settings:
     hud_enabled: bool = True
     local_model_dir: str = ""         # 本地离线引擎的模型目录，见 config.local_model_dir()
     max_record_seconds: int = MAX_RECORD_SECONDS   # 单次录音上限（秒），0 = 不限
+    pending_ttl_minutes: int = PENDING_TTL_MINUTES  # 待取文字的保鲜期（分钟），0 = 不过期
     retention_days: int = RETENTION_DAYS           # 留存数据保留天数，0 = 不清理
 
     # ---- 持久化 ----
