@@ -145,6 +145,10 @@ func listenSchema() *jsonschema.Schema {
 		if prop := s.Properties["seconds"]; prop != nil {
 			prop.Title = "Seconds"
 			prop.Default = json.RawMessage("10.0")
+			// 对齐 Python 版：可选（缺省补 10）但不是 nullable。指针类型会被
+			// 推断成 ["null","number"]，这里抹掉 null。
+			prop.Types = nil
+			prop.Type = "number"
 		}
 	})
 }
@@ -181,17 +185,19 @@ type handler struct {
 	caller Caller
 }
 
-// result 把一个工具输出包成「一个 TextContent（紧凑 JSON）+ 同名结构化对象」。
-// 手写 encoder 关掉 HTML 转义，和 Python 版 json.dumps 的文本更接近。
+// result 把一个工具输出包成「一个 TextContent（紧凑 JSON）+ SDK 托管的结构化对象」。
+//
+// 文本 JSON 用手写 encoder（SetEscapeHTML(false)），和 Python 版 json.dumps 的
+// 文本更接近；StructuredContent 交回 SDK 托管（遵守 go-sdk 对 ToolHandlerFor
+// 的约定），所以这里只填 Content，把 out 作为 Out 返回。
 func result(out map[string]any) (*mcp.CallToolResult, any, error) {
 	encoded, err := encodeJSON(out)
 	if err != nil {
 		return nil, nil, fmt.Errorf("序列化工具结果失败：%v", err)
 	}
 	return &mcp.CallToolResult{
-		Content:           []mcp.Content{&mcp.TextContent{Text: string(encoded)}},
-		StructuredContent: json.RawMessage(encoded),
-	}, nil, nil
+		Content: []mcp.Content{&mcp.TextContent{Text: string(encoded)}},
+	}, out, nil
 }
 
 func encodeJSON(value any) ([]byte, error) {

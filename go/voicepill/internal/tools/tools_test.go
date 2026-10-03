@@ -1,10 +1,13 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -45,33 +48,6 @@ func countCalls(calls []string, cmd string) int {
 	return n
 }
 
-// structured 把工具结果里的结构化对象解出来；同时要求文本 JSON 与它逐字节一致。
-func structured(t *testing.T, res *mcp.CallToolResult) map[string]any {
-	t.Helper()
-	if res == nil {
-		t.Fatal("工具结果是 nil")
-	}
-	if len(res.Content) != 1 {
-		t.Fatalf("Content 长度 = %d，想要 1", len(res.Content))
-	}
-	text, ok := res.Content[0].(*mcp.TextContent)
-	if !ok {
-		t.Fatalf("Content[0] 类型 = %T", res.Content[0])
-	}
-	structuredBytes, err := json.Marshal(res.StructuredContent)
-	if err != nil {
-		t.Fatalf("marshal StructuredContent: %v", err)
-	}
-	if string(structuredBytes) != text.Text {
-		t.Fatalf("文本 JSON 与结构化对象不一致：\n text=%s\nstruct=%s", text.Text, structuredBytes)
-	}
-	out := map[string]any{}
-	if err := json.Unmarshal(structuredBytes, &out); err != nil {
-		t.Fatalf("StructuredContent 不是 JSON 对象：%v", err)
-	}
-	return out
-}
-
 // listen：用户提前按 Fn 松手（status 第二次就 idle）时不该傻等 seconds。
 func TestListenStopsWhenUserReleasesEarly(t *testing.T) {
 	withFastPoll(t)
@@ -93,7 +69,7 @@ func TestListenStopsWhenUserReleasesEarly(t *testing.T) {
 	}}
 	h := &handler{caller: fake}
 	started := time.Now()
-	res, _, err := h.listen(context.Background(), nil, listenArgs{Seconds: ptr(30)})
+	_, out, err := h.listen(context.Background(), nil, listenArgs{Seconds: ptr(30)})
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
@@ -103,7 +79,7 @@ func TestListenStopsWhenUserReleasesEarly(t *testing.T) {
 	if countCalls(fake.calls, "start") != 1 || countCalls(fake.calls, "stop") != 1 {
 		t.Fatalf("start/stop 调用次数不对：%v", fake.calls)
 	}
-	if got := structured(t, res)["text"]; got != "你好" {
+	if got := out.(map[string]any)["text"]; got != "你好" {
 		t.Fatalf("text = %v，想要 你好", got)
 	}
 }
@@ -121,18 +97,18 @@ func TestStopTakesQueueWithoutStopping(t *testing.T) {
 		return raw("{}"), nil
 	}}
 	h := &handler{caller: fake}
-	res, _, err := h.stop(context.Background(), nil, noArgs{})
+	_, out, err := h.stop(context.Background(), nil, noArgs{})
 	if err != nil {
 		t.Fatalf("stop: %v", err)
 	}
 	if countCalls(fake.calls, "stop") != 0 {
 		t.Fatalf("没在录音就不该发 stop：%v", fake.calls)
 	}
-	m := structured(t, res)
+	m := out.(map[string]any)
 	if m["text"] != "b" {
 		t.Fatalf("text = %v，想要 b", m["text"])
 	}
-	if texts, ok := m["texts"].([]any); !ok || len(texts) != 2 || texts[0] != "a" {
+	if texts, ok := m["texts"].([]string); !ok || len(texts) != 2 || texts[0] != "a" {
 		t.Fatalf("texts = %#v", m["texts"])
 	}
 	if m["timed_out"] != false {
@@ -173,12 +149,12 @@ func TestPromptHookSwallowsCallerErrors(t *testing.T) {
 	fake := &scriptedCaller{handler: func(cmd string, args map[string]any) (json.RawMessage, error) {
 		return nil, errors.New("控制面没在跑")
 	}}
-	res, _, err := (&handler{caller: fake}).promptHook(context.Background(), nil, promptHookArgs{})
+	_, out, err := (&handler{caller: fake}).promptHook(context.Background(), nil, promptHookArgs{})
 	if err != nil {
 		t.Fatalf("prompt_hook 不该抛：%v", err)
 	}
-	if structured(t, res)["continue"] != true {
-		t.Fatalf("结果 = %s", res.StructuredContent)
+	if out.(map[string]any)["continue"] != true {
+		t.Fatalf("out = %#v", out)
 	}
 }
 
@@ -187,11 +163,11 @@ func TestPromptHookInjectsPendingText(t *testing.T) {
 	fake := &scriptedCaller{handler: func(cmd string, args map[string]any) (json.RawMessage, error) {
 		return raw(`{"texts":["  ","第一句","第二句"],"count":3}`), nil
 	}}
-	res, _, err := (&handler{caller: fake}).promptHook(context.Background(), nil, promptHookArgs{SessionID: "s"})
+	_, out, err := (&handler{caller: fake}).promptHook(context.Background(), nil, promptHookArgs{SessionID: "s"})
 	if err != nil {
 		t.Fatalf("prompt_hook: %v", err)
 	}
-	hook := structured(t, res)["hookSpecificOutput"].(map[string]any)
+	hook := out.(map[string]any)["hookSpecificOutput"].(map[string]any)
 	if hook["hookEventName"] != "UserPromptSubmit" {
 		t.Fatalf("hookEventName = %v", hook["hookEventName"])
 	}
@@ -205,11 +181,11 @@ func TestTakePassesThrough(t *testing.T) {
 	fake := &scriptedCaller{handler: func(cmd string, args map[string]any) (json.RawMessage, error) {
 		return raw(`{"texts":["x"],"count":1}`), nil
 	}}
-	res, _, err := (&handler{caller: fake}).take(context.Background(), nil, noArgs{})
+	_, out, err := (&handler{caller: fake}).take(context.Background(), nil, noArgs{})
 	if err != nil {
 		t.Fatalf("take: %v", err)
 	}
-	m := structured(t, res)
+	m := out.(map[string]any)
 	if m["count"] != float64(1) {
 		t.Fatalf("count = %#v", m["count"])
 	}
@@ -223,35 +199,64 @@ func TestStatusReportsNotRunning(t *testing.T) {
 	fake := &scriptedCaller{handler: func(cmd string, args map[string]any) (json.RawMessage, error) {
 		return nil, errors.New("连不上")
 	}}
-	res, _, err := (&handler{caller: fake}).status(context.Background(), nil, noArgs{})
+	_, out, err := (&handler{caller: fake}).status(context.Background(), nil, noArgs{})
 	if err != nil {
 		t.Fatalf("status 不该抛：%v", err)
 	}
-	m := structured(t, res)
+	m := out.(map[string]any)
 	if m["running"] != false || m["note"] != noteNotRunning {
 		t.Fatalf("out = %#v", m)
 	}
 }
 
-// 八个工具的名字与描述（含中文）必须与 Python 版逐字一致；无参工具入参
-// 是 {"type":"object","additionalProperties":false}；listen.seconds 带上
-// Python 版有的 title 与 default。
-func TestToolListMatchesPythonContract(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
+// newPair 起一对进程内的 MCP 会话；server->client 的原始字节被采集下来。
+func newPair(t *testing.T, ctx context.Context, caller Caller) (*mcp.ClientSession, *captureWriter) {
+	t.Helper()
 	server := mcp.NewServer(&mcp.Implementation{Name: ServerName, Version: ServerVersion}, nil)
-	register(server, &scriptedCaller{})
-	serverTransport, clientTransport := mcp.NewInMemoryTransports()
-	done := make(chan error, 1)
-	go func() { done <- server.Run(ctx, serverTransport) }()
+	register(server, caller)
+
+	serverReader, clientWriter := io.Pipe()
+	clientReader, serverWriter := io.Pipe()
+	capture := &captureWriter{w: serverWriter}
+	go func() { _ = server.Run(ctx, &mcp.IOTransport{Reader: serverReader, Writer: capture}) }()
 
 	client := mcp.NewClient(&mcp.Implementation{Name: "probe", Version: "0"}, nil)
-	session, err := client.Connect(ctx, clientTransport, nil)
+	session, err := client.Connect(ctx, &mcp.IOTransport{Reader: clientReader, Writer: clientWriter}, nil)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	defer session.Close()
+	t.Cleanup(func() { session.Close() })
+	return session, capture
+}
+
+type captureWriter struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+	w   io.WriteCloser
+}
+
+func (c *captureWriter) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	c.buf.Write(p)
+	c.mu.Unlock()
+	return c.w.Write(p)
+}
+
+func (c *captureWriter) Close() error { return c.w.Close() }
+
+func (c *captureWriter) String() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.buf.String()
+}
+
+// 八个工具的名字与描述（含中文）必须与 Python 版逐字一致；无参工具入参
+// 是 {"type":"object","additionalProperties":false}；listen.seconds 带上
+// Python 版有的 title/default，且类型是纯 number（不是 ["null","number"]）。
+func TestToolListMatchesPythonContract(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	session, _ := newPair(t, ctx, &scriptedCaller{})
 
 	result, err := session.ListTools(ctx, &mcp.ListToolsParams{})
 	if err != nil {
@@ -312,54 +317,71 @@ func TestToolListMatchesPythonContract(t *testing.T) {
 	if seconds["title"] != "Seconds" || seconds["default"] != float64(10) {
 		t.Fatalf("listen.seconds = %#v", seconds)
 	}
-
-	cancel()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("服务端没停下来")
+	if seconds["type"] != "number" {
+		t.Fatalf("listen.seconds 类型 = %#v，想要 number", seconds["type"])
 	}
 }
 
-// tools/call 的文本 JSON 不做 HTML 转义，和 Python 版 json.dumps 一致。
-func TestResultTextKeepsRawHTMLChars(t *testing.T) {
+// tools/call：文本 JSON 手写、不转义；StructuredContent 交给 SDK 托管
+// （线上原始字节带 HTML 转义），但按 JSON 解析后与文本等价。
+func TestWireTextRawAndStructuredEscaped(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	fake := &scriptedCaller{handler: func(cmd string, args map[string]any) (json.RawMessage, error) {
 		return raw(`{"texts":["<b>&\"引号\""],"count":1}`), nil
 	}}
-	server := mcp.NewServer(&mcp.Implementation{Name: ServerName, Version: ServerVersion}, nil)
-	register(server, fake)
-	serverTransport, clientTransport := mcp.NewInMemoryTransports()
-	done := make(chan error, 1)
-	go func() { done <- server.Run(ctx, serverTransport) }()
-	client := mcp.NewClient(&mcp.Implementation{Name: "probe", Version: "0"}, nil)
-	session, err := client.Connect(ctx, clientTransport, nil)
-	if err != nil {
-		t.Fatalf("connect: %v", err)
-	}
-	defer session.Close()
+	session, capture := newPair(t, ctx, fake)
 
 	callResult, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "voice_pill_take"})
 	if err != nil {
 		t.Fatalf("tools/call: %v", err)
 	}
-	payload, ok := callResult.StructuredContent.(map[string]any)
+
+	text, ok := callResult.Content[0].(*mcp.TextContent)
+	if !ok {
+		t.Fatalf("Content[0] 类型 = %T", callResult.Content[0])
+	}
+	if strings.Contains(text.Text, `\u003c`) || strings.Contains(text.Text, `\u0026`) {
+		t.Fatalf("文本里出现 HTML 转义序列：%s", text.Text)
+	}
+	if !strings.Contains(text.Text, `<b>&`) {
+		t.Fatalf("文本被改过：%s", text.Text)
+	}
+
+	// 解析后的结构化对象与文本等价。
+	var fromText map[string]any
+	if err := json.Unmarshal([]byte(text.Text), &fromText); err != nil {
+		t.Fatalf("文本不是 JSON：%v", err)
+	}
+	structured, ok := callResult.StructuredContent.(map[string]any)
 	if !ok {
 		t.Fatalf("StructuredContent 类型 = %T", callResult.StructuredContent)
 	}
-	texts, ok := payload["texts"].([]any)
-	if !ok || len(texts) != 1 || texts[0] != "<b>&\"引号\"" {
-		t.Fatalf("StructuredContent 里的字被改过：%#v", payload)
+	if !equalJSON(fromText, structured) {
+		t.Fatalf("解析后不等价：\n text=%#v\nstruct=%#v", fromText, structured)
 	}
 
-	cancel()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("服务端没停下来")
+	// 线上原始帧：SDK 托管的 StructuredContent 一定带 HTML 转义。
+	frame := ""
+	for _, line := range strings.Split(capture.String(), "\n") {
+		if strings.Contains(line, `"structuredContent"`) {
+			frame = line
+			break
+		}
 	}
+	if frame == "" {
+		t.Fatalf("线上没抓到带 structuredContent 的响应帧")
+	}
+	if !strings.Contains(frame, `\u003c`) {
+		t.Fatalf("StructuredContent 线上应带 HTML 转义：%s", frame)
+	}
+}
+
+func equalJSON(a, b any) bool {
+	left, err1 := json.Marshal(a)
+	right, err2 := json.Marshal(b)
+	return err1 == nil && err2 == nil && string(left) == string(right)
 }
 
 func names(tools []*mcp.Tool) []string {
