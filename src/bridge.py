@@ -60,6 +60,25 @@ PIPE_PREFIX = r"\\.\pipe\VoicePill-"
 # 自测用：整个换掉管道名，就能在不碰真身的前提下测「控制面不在」这条路。
 PIPE_NAME_ENV = "VOICEPILL_PIPE_NAME"
 
+# 语言无关的第二条通道（NDJSON）。跟旧通道同一个用户 tag，只换前缀。
+JSON_PIPE_PREFIX = r"\\.\pipe\VoicePill-Json-"
+JSON_PIPE_NAME_ENV = "VOICEPILL_JSON_PIPE_NAME"
+
+
+def json_pipe_name() -> str:
+    """NDJSON 通道的管道名。与 pipe_name() 同源，只有前缀不同。"""
+    override = os.environ.get(JSON_PIPE_NAME_ENV, "").strip()
+    if override:
+        return override
+    tag = hashlib.sha256(
+        os.path.normcase(config.app_dir()).encode("utf-8")).hexdigest()[:16]
+    return JSON_PIPE_PREFIX + tag
+
+
+def auth_token(key: bytes, nonce: str) -> str:
+    """挑战应答的应答：HMAC-SHA256(key, ASCII(nonce))，64 位小写 hex。"""
+    import hmac as _hmac
+    return _hmac.new(key, nonce.encode("ascii"), "sha256").hexdigest()
 KEY_FILE = "bridge.key"
 
 # 客户端「建连 + authkey 握手」的总上限（秒）。握手没有超时参数，只能自己卡。
