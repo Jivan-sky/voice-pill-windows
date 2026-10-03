@@ -32,6 +32,8 @@ Voice Pill 的 Windows 移植工程。按住热键说话，松手把文字粘到
 | 通路验证（M1） | ✅ **完成（2026-10-02）** —— Fn → 采音 → NDJSON 管道 → 解码 → 粘贴，四段逐段验过，假引擎全链路一次通过（`EXIT CODE 0`） |
 | 本地后端（M2.5） | ✅ **完成（2026-10-03）** —— `local` 跑 SenseVoice-Small int8，RTF 0.027，`pipe-selftest` 全链路通过，实时字幕保住。见 `docs/移植方案.md` 6.5 |
 | 远端后端 | ❌ **两条都不可用** —— Codex 要 ChatGPT 付费令牌；豆包非官方协议 2026-10-03 复查确认服务端已不路由（凭据与握手都正常，服务端自己回 `service discovery failure`）。代码保留，改 `settings.json` 一行可切回。见 6.4 / 6.5 |
+| 真麦克风验收 | ✅ **通过（2026-10-03）** —— 真按 Fn 录 6.79 秒 → 解码 0.19 秒 → 粘贴成功，**用户确认「很准」** |
+| 常驻形态（M5 提前） | ✅ **完成（2026-10-03）** —— 单实例锁、无窗口开机自启（看门狗）、崩溃自拉、120 秒录音护栏、日志与留存清理、配置热重载、`--stop`。见 `docs/移植方案.md` 第 11 节 |
 
 **M1 验收记录（2026-10-02）**
 
@@ -68,9 +70,14 @@ Voice Pill 的 Windows 移植工程。按住热键说话，松手把文字粘到
 | `tools/capture-probe.py` | 采音单独验：开流耗时 + 收尾竞态回归 + 空录音闸门 + 对象复用 |
 | `tools/pipe-selftest.py` | 拿 WAV 直接喂引擎，跳过麦克风和热键，单独验管道/解码/超时 |
 | `tools/paste-selftest.py` | 自建靶子文本框验粘贴（不污染用户正在用的窗口），含剪贴板还原 |
+| `tools/resident-selftest.py` | 常驻形态自测：单实例/护栏/清理/日志滚动/`--stop`/热重载，起真进程从外面观察，**不需要人也不需要麦克风** |
 | `tools/mock-asr.py` | 假引擎（实现 NDJSON 契约），用来单独验管道/解码/粘贴 |
 | `tools/local-asr.py` | **本地离线引擎**（sherpa-onnx + SenseVoice），实现同一份 NDJSON 契约，`local` 后端用它 |
-| `src/console.py` | 控制台编码兜底（管道下打印 ✅ 会 GBK 崩） |
+| `src/console.py` | 控制台编码兜底（管道下打印 ✅ 会 GBK 崩）+ 应用日志 |
+| `src/single_instance.py` | 单实例互斥体：两个实例会各采一遍麦克风、各粘一遍 |
+| `src/supervise.py` | 看门狗：真身非正常退出时重拉，正常退出则一起退 |
+| `src/autostart.py` | 开机自启的安装/卸载/查看 |
+| `THIRD_PARTY.md` | 第三方组件与许可清单（本仓库内的正本） |
 | `docs/移植方案.md` | 路线对比、键位实测记录、里程碑、风险 |
 | `fn-probe.log` / `fn-probe2.log` | 探针原始日志（第一轮全键、第二轮只看 Fn 的按下松开） |
 
@@ -88,6 +95,39 @@ Voice Pill 的 Windows 移植工程。按住热键说话，松手把文字粘到
 `settings.json` 的 `local_model_dir`（下载方式见 `docs/移植方案.md` 6.5）。
 两个远端后端的二进制仍放 `bin/`（见 `bin/README.md`）。
 
+## 常驻运行（推荐用法）
+
+装成"开机就在、按 Fn 就用"的常驻进程：
+
+```bash
+# 装开机自启（本机非管理员注册不了计划任务，会自动落到启动文件夹 + 看门狗）
+.venv\Scripts\python.exe src\main.py --install-autostart
+
+# 取消
+.venv\Scripts\python.exe src\main.py --uninstall-autostart
+```
+
+装完后确认它活着，以及需要停它的时候：
+
+```bash
+.venv\Scripts\python.exe src\main.py --check     # 看「[常驻]」一段：在跑没、自启装没、日志多大
+.venv\Scripts\python.exe src\main.py --stop      # 让它优雅退出（正在录音会等这次收尾）
+```
+
+| 想知道的 | 去哪看 |
+|---|---|
+| 它还在不在 | `--check` 的「实例」一行；或任务管理器里有没有 pythonw |
+| 为什么不动了 | `%LOCALAPPDATA%\VoicePill\logs\app.log`（**启动横幅有、收尾行没有 = 非正常死亡**） |
+| 崩过没有 | 同一份 app.log：看门狗会记「子进程退出 code=…」 |
+| 改配置 | 直接改 `%LOCALAPPDATA%\VoicePill\settings.json`，**2 秒内热重载**，不用重启 |
+
+**同一时刻只允许一个实例**：两个实例都会采到同一支麦克风、都会粘贴，一次说话会被
+粘两遍（实测过）。第二个实例会被直接拒掉（exit code 3），并告诉你怎么停掉前一个。
+
+`settings.json` 里两个新开关：`max_record_seconds`（单次录音上限，默认 120，
+0 = 不限）、`retention_days`（失败录音与转写日志保留几天，默认 7，0 = 不清理）。
+
 ## 许可
 
-原版为 MIT。移植产物沿用 MIT，保留上游署名与第三方组件许可（`D:\FDE_HA7CH\voice-pill\THIRD_PARTY.md`）。
+原版为 MIT。移植产物沿用 MIT，保留上游署名与第三方组件许可，清单见本仓库
+`THIRD_PARTY.md`（上游 macOS 版那份在 `D:\FDE_HA7CH\voice-pill\THIRD_PARTY.md`）。

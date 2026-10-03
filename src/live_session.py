@@ -33,6 +33,12 @@ MAX_EVENT_BYTES = 1_048_576
 # 失败时截取 stderr 尾部长度（原版 suffix(1600)）
 STDERR_TAIL = 1600
 
+# 驻留形态下父进程是 pythonw（GUI 子系统、没有控制台）。这种父进程拉起
+# **控制台子系统**的子进程（bin/*.exe 那两个引擎）时，Windows 会给子进程
+# 新开一个控制台窗口——每录一次就闪一个黑框。CREATE_NO_WINDOW 明确说
+# "别给窗口"；管道读写完全不受影响，只是没有那个窗口。
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
 
 class LiveStreamError(Exception):
     pass
@@ -151,6 +157,7 @@ class LiveTranscriptionSession:
                 stderr=self._log_file,
                 bufsize=0,          # 无缓冲，短事件立刻可读
                 env=env,
+                creationflags=_NO_WINDOW,
             )
         except OSError as exc:
             self._finish_once(None, "无法启动转写引擎：%s" % exc)

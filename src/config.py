@@ -10,12 +10,19 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 from dataclasses import asdict, dataclass
 from typing import Optional
 
 APP_DIR_NAME = "VoicePill"
 
 LONG_PRESS_MS = 180
+
+# 留存录音与日志的默认保留天数。见 prune_data()。
+RETENTION_DAYS = 7
+
+# 单次录音的默认上限（秒）。0 = 不限。见 main.RecordWatchdog 的注释。
+MAX_RECORD_SECONDS = 120
 
 
 @dataclass(frozen=True)
@@ -64,6 +71,49 @@ def logs_dir() -> str:
     path = os.path.join(app_dir(), "logs")
     os.makedirs(path, exist_ok=True)
     return path
+
+
+def app_log_path() -> str:
+    """应用日志（驻留进程的黑匣子；无控制台时它还是 stdout/stderr 的落点）。
+
+    刻意叫 app.log 而不是 rec-*.log：实时转写的日志是**每次录音一个文件**，
+    且成功就删（见 main.VoicePill._remove_log），而这个是进程自己的一本账，
+    两套生命周期不能混。prune_data() 也因此不去碰它。
+    """
+    return os.path.join(logs_dir(), "app.log")
+
+
+def prune_data(days: int = RETENTION_DAYS) -> list:
+    """清掉过期的失败录音与实时转写日志，返回被删的路径。
+
+    为什么需要：失败录音和 `rec-*.log` 都是**只增不减**的。真实使用里
+    "引擎偶尔起不来"是常态，攒上几个月就是几千个文件；而且失败录音里
+    是用户自己的说话内容，留着没有价值、只有隐私代价。
+
+    只碰 `rec-*`，不碰 app.log —— 后者是进程当前正打开的账本。
+    `days <= 0` 表示不要自动清理，交给用户自己管。
+    """
+    if days <= 0:
+        return []
+    cutoff = time.time() - days * 86400.0
+    removed = []
+    for folder in (recordings_dir(), logs_dir()):
+        try:
+            names = os.listdir(folder)
+        except OSError:
+            continue
+        for name in names:
+            if not name.startswith("rec-"):
+                continue
+            path = os.path.join(folder, name)
+            try:
+                if not os.path.isfile(path) or os.path.getmtime(path) >= cutoff:
+                    continue
+                os.remove(path)
+            except OSError:
+                continue
+            removed.append(path)
+    return removed
 
 
 def credentials_path() -> str:
@@ -146,6 +196,8 @@ class Settings:
     doubao_punctuation: bool = True
     hud_enabled: bool = True
     local_model_dir: str = ""         # 本地离线引擎的模型目录，见 config.local_model_dir()
+    max_record_seconds: int = MAX_RECORD_SECONDS   # 单次录音上限（秒），0 = 不限
+    retention_days: int = RETENTION_DAYS           # 留存数据保留天数，0 = 不清理
 
     # ---- 持久化 ----
 

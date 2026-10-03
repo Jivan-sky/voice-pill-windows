@@ -22,6 +22,17 @@ pynput 会不会把它原样透出来是未知数。而裸 `WH_KEYBOARD_LL` 已�
 钩子回调跑在**装了钩子的那个线程**上，而且 Windows 对它有超时限制
 （LowLevelHooksTimeout，默认 300 ms）——回调里做慢活会被系统摘掉钩子。
 所以回调只往队列里塞事件，状态机和真正的业务回调都在 worker 线程上跑。
+
+钩子会死，所以要有存活检测
+------------------------
+`SetWindowsHookExW` 成功不等于它一直活着：消息循环被 WM_QUIT 打断、或系统
+判定回调超时，钩子就没了。而**没有任何通知**会告诉我们这件事——表现是
+"按 Fn 没反应"，跟"程序没启动"长得一模一样。驻留形态下这是最坏的失败模式：
+用户以为它还在，其实早就哑了。
+
+所以对外提供 `alive` 与 `restart()`，由主循环定期体检（main.VoicePill._tick）。
+只能测出"线程没了"这一种死法；"线程还在但钩子被系统摘了"理论上测不到，
+但那种情形下消息循环仍会继续收消息，重装也未必更优——先覆盖能覆盖的。
 """
 from __future__ import annotations
 
@@ -141,6 +152,8 @@ class HotkeyManager:
         # 备用组合键：Ctrl / Alt 的按下集合 + 是否是「按住」状态
         self._mods_down: set = set()
         self._secondary_held = False
+        # 录音进行中改配置时，主键换成什么（本次录音结束后生效），见 set_primary
+        self._pending_primary: Optional[KeySpec] = None
 
     # ---------- 对外 ----------
 
@@ -149,6 +162,53 @@ class HotkeyManager:
         self._worker.start()
         self._hook_thread = threading.Thread(target=self._hook_loop, daemon=True)
         self._hook_thread.start()
+
+    @property
+    def alive(self) -> bool:
+        """钩子当前是否还在岗。装失败过、或消息循环退出了，都为 False。"""
+        thread = self._hook_thread
+        return bool(self._hook_installed and self._hook is not None
+                    and thread is not None and thread.is_alive())
+
+    def restart(self) -> None:
+        """整条重装（钩子线程 + worker 线程 + 队列）。
+
+        worker 线程理论上不必重建，但"钩子线程死了而 worker 还活着"是个
+        半死状态，留着只会让排查更难；重建代价是一次线程创建，可以忽略。
+        """
+        self.stop()
+        # 必须换一个新队列：stop() 往旧队列塞过哨兵 None，沿用会让新 worker
+        # 一上来就吃掉那个哨兵、立刻退出。
+        self._queue = queue.Queue()
+        self._thread_id = 0
+        self._hook = None
+        self._hook_installed = False
+        self._hook_error = 0
+        self._proc_ref = None
+        self._hook_thread = None
+        self._worker = None
+        self.reset()
+        self.start()
+
+    def set_primary(self, spec: KeySpec) -> bool:
+        """换主键。返回是否立刻生效（False = 正在录音，本次结束后生效）。
+
+        不能原地换：如果换的时刻用户正按着旧主键，旧键的松开事件就再也
+        匹配不上，`_primary_held` 会永远卡在 True，之后新主键的按下会被
+        当成"键盘自动重复"挡掉——热键彻底哑掉，且没有任何提示。
+        """
+        with self._lock:
+            if self._recording:
+                self._pending_primary = spec
+                return False
+            self._swap_primary_locked(spec)
+            return True
+
+    def _swap_primary_locked(self, spec: KeySpec) -> None:
+        """换键并清掉半按状态。调用方必须已持锁。"""
+        self._cancel_timer()
+        self._primary_held = False
+        self.primary = spec
 
     def stop(self) -> None:
         with self._lock:
@@ -167,6 +227,9 @@ class HotkeyManager:
             self._recording = False
             self._primary_held = False
             self._secondary_held = False
+            pending, self._pending_primary = self._pending_primary, None
+            if pending is not None:
+                self._swap_primary_locked(pending)
 
     # ---------- 钩子线程 ----------
 
@@ -208,8 +271,12 @@ class HotkeyManager:
     # ---------- worker 线程 ----------
 
     def _work_loop(self) -> None:
+        # 在启动时就把队列对象攥在手里：restart() 会换一个新队列，若这里每次
+        # 都重新读 self._queue，旧 worker 可能在新队列上跟新 worker 抢事件
+        # （丢一次按键或重复一次按键），而钩子只往"当前"队列里塞。
+        inbox = self._queue
         while True:
-            item = self._queue.get()
+            item = inbox.get()
             if item is None:
                 break
             up, vk, scan, ext = item

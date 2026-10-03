@@ -15,8 +15,21 @@
     python main.py                  正常启动
     python main.py --check          自检：引擎、麦克风、配置
     python main.py --list-devices   列麦克风
-    python main.py --retry          重试留存的失败录音
     python main.py --once           录一次就退出（调试用）
+
+常驻形态
+--------
+本工具的目标形态是「一直在后台待命」：开机自己起来、没有窗口、按键即用。
+为此多出这几个开关：
+    main.py --install-autostart     开机自启（优先计划任务，见 autostart.py）
+    main.py --uninstall-autostart   取消开机自启
+    main.py --stop                  让正在驻留的那个实例优雅退出
+    main.py --retry                 重试留存的失败录音（尚未实现）
+
+驻留时用 `pythonw.exe` 启动，没有控制台；所有输出进
+`%LOCALAPPDATA%\\VoicePill\\logs\\app.log`。**同一时刻只允许一个实例**：
+两个实例都会采到同一支麦克风、都会粘贴，一次说话会被粘两遍（见
+single_instance.py）。
 """
 from __future__ import annotations
 
@@ -27,7 +40,9 @@ import os
 import sys
 import threading
 import time
+import traceback
 from datetime import datetime
+from typing import Callable, Optional
 
 # 允许 `python src/main.py` 与 `python -m src.main` 两种跑法
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -37,11 +52,13 @@ import console
 
 console.make_output_safe()      # 必须在任何 print 之前；失败原因见 console.py
 
+import autostart
 import audio as audio_mod
 import config
 import hotkey
 import paste as paste_mod
 import providers
+import single_instance
 from hotkey import HotkeyManager
 from hud import HudWindow
 from live_session import LiveTranscriptionSession
@@ -60,6 +77,54 @@ class Phase(enum.Enum):
 # 没有任何可转写的内容，送后端只会浪费一次往返、再拿回一句空话。
 MIN_CAPTURE_SECONDS = 0.10
 
+# 主循环的定期体检间隔（秒）。主循环本身 0.5 秒转一圈，见 VoicePill._tick。
+HOOK_CHECK_SECONDS = 30.0        # 热键钩子还在不在
+SETTINGS_CHECK_SECONDS = 2.0     # settings.json 有没有被改
+MAINTENANCE_SECONDS = 6 * 3600.0  # 清一次过期留存
+
+
+class RecordWatchdog:
+    """单次录音的时长护栏：到点自己结束，不等松手事件。
+
+    为什么必须有：整条链路里**唯一**的结束信号是主键的 keyup。这个信号会丢——
+    实测出现过 32.27 秒的录音（用户早就松手了），也见过钩子被系统摘掉之后
+    永远收不到松开。没有护栏的话麦克风会被一直占着，用户还以为是软件卡了。
+
+    到点后的动作是「截断并照常转写」，不是「丢弃」：说出去的内容先说到的
+    那部分已经采到了，扔掉等于白说。粘贴那一端还有前台窗口校验兜底
+    （见 paste.py 第 4 条），窗口早换了就只留在剪贴板里，不会乱粘。
+
+    `seconds <= 0` 表示不设上限。
+    """
+
+    def __init__(self, seconds: float, on_fire: Callable[[], None]) -> None:
+        self.seconds = float(seconds)
+        self._on_fire = on_fire
+        self._timer: Optional[threading.Timer] = None
+        self._fired = False
+
+    def arm(self) -> None:
+        self.disarm()
+        self._fired = False
+        if self.seconds <= 0:
+            return
+        self._timer = threading.Timer(self.seconds, self._fire)
+        self._timer.daemon = True
+        self._timer.start()
+
+    def disarm(self) -> None:
+        timer, self._timer = self._timer, None
+        if timer is not None:
+            timer.cancel()
+
+    @property
+    def fired(self) -> bool:
+        return self._fired
+
+    def _fire(self) -> None:
+        self._fired = True
+        self._on_fire()
+
 
 class VoicePill:
     def __init__(self, settings: config.Settings, once: bool = False) -> None:
@@ -74,11 +139,26 @@ class VoicePill:
 
         self._target_hwnd = 0
         self._wav_path = ""
+        self._log_path = ""
         self._transcript = ""
         self._last_error = ""
         # 退出信号。见 _shutdown 的注释：不能再用 sys.exit()。
         self._stop = threading.Event()
         self._stopping = False
+        # 时长护栏（settings.max_record_seconds，0 = 不限）
+        self._watchdog = RecordWatchdog(
+            settings.max_record_seconds, self._on_max_duration)
+
+        # 常驻形态的定期杂务（见 _tick / run）
+        self._quit_event = 0
+        self._quit_seen = False
+        self._hook_restarts = 0
+        self._settings_mtime = 0.0
+        now = time.monotonic()
+        self._next_hook_check = now + HOOK_CHECK_SECONDS
+        self._next_settings_check = now + SETTINGS_CHECK_SECONDS
+        # run() 里开机会立刻清一次，所以下一次排到 6 小时后
+        self._next_maintenance = now + MAINTENANCE_SECONDS
 
         self.hotkeys = HotkeyManager(
             primary=settings.primary_spec,
@@ -110,6 +190,7 @@ class VoicePill:
             config.logs_dir(),
             "rec-%s.log" % datetime.now().strftime("%Y%m%d-%H%M%S"),
         )
+        self._log_path = log_path
 
         self.session = LiveTranscriptionSession()
         self.session.start(
@@ -140,6 +221,21 @@ class VoicePill:
         if self.settings.hud_enabled:
             self.hud.show("")
             self.hud.set_phase("listening")
+
+        # 护栏放在最后起：前面的同步段抛异常时不会留下一个还在计时的定时器
+        self._watchdog.arm()
+
+    def _on_max_duration(self) -> None:
+        """录音超时。在主循环之外的定时器线程上触发。"""
+        with self._lock:
+            if self.phase is not Phase.RECORDING:
+                return
+        limit = self.settings.max_record_seconds
+        print("[护栏] 录音已到 %s 秒上限（松手事件大概丢了），按上限截断转写。"
+              % limit, file=sys.stderr)
+        if self.settings.hud_enabled:
+            self.hud.set_text("已达最长录音时长（%s 秒），自动结束" % limit)
+        self.on_stop()
 
     def _on_capture_error(self, exc: Exception) -> None:
         """开流失败（设备被独占、权限、拔了等）。在开流线程上回调。"""
@@ -187,6 +283,7 @@ class VoicePill:
         print("[跳过] %s —— %s" % (reason, hint), file=sys.stderr)
         self.session.cancel()          # 引擎都没必要启动，直接撤
         self._remove_wav()             # 空录音没有留存价值
+        self._remove_log()
         if self.settings.hud_enabled:
             self.hud.set_text("%s" % reason)
             threading.Timer(2.5, self.hud.hide).start()
@@ -232,6 +329,7 @@ class VoicePill:
 
         # 转写成功 → 删掉录音（原版同）
         self._remove_wav()
+        self._remove_log()
         if self.settings.hud_enabled:
             self.hud.hide()
         self._reset()
@@ -247,31 +345,165 @@ class VoicePill:
             except OSError:
                 pass
 
+    def _remove_log(self) -> None:
+        """转写成功后删掉本次的实时日志。
+
+        这些 `rec-*.log` 是引擎 stderr 的留存，只有**失败**时才有人看
+        （live_session 的 _read_log_tail 就是读它）。成功还留着，就是每次
+        录音留一个文件、永不清理——实测这类文件在真实使用里攒得飞快。
+        失败的走另一条路：保留，由 config.prune_data 按天清。
+        """
+        if self._log_path and os.path.isfile(self._log_path):
+            try:
+                os.remove(self._log_path)
+            except OSError:
+                pass
+
     def _reset(self) -> None:
         with self._lock:
             self.phase = Phase.IDLE
+        self._watchdog.disarm()
         self.hotkeys.reset()
 
-    def run(self) -> None:
+    def run(self) -> int:
         if self.settings.hud_enabled:
             self.hud.start()
         self.hotkeys.start()
+        self._quit_event = single_instance.open_quit_event()
+
         print("Voice Pill 已启动。")
         print("  后端    ：%s" % providers.get(self.settings.provider).label)
         print("  主键    ：%s —— 按住说话，松开粘贴（轻点不触发）"
               % hotkey.describe_primary(self.settings.primary_spec))
         print("  备用键  ：Ctrl + Alt + Space（按一次开始，再按一次结束）")
         print("  取消    ：录音中按 Esc")
-        print("  Ctrl+C 退出")
+        print("  最长录音：%s" % ("%s 秒" % self.settings.max_record_seconds
+                                 if self.settings.max_record_seconds > 0
+                                 else "不限"))
+        print("  Ctrl+C 退出；驻留形态用 `main.py --stop`")
+
+        self._settings_mtime = _mtime(config.Settings.path())
+        self._run_maintenance()          # 开机先清一次过期留存
+
         try:
-            # 主循环只负责「等退出信号」。
+            # 主循环只负责「等退出信号」和定期杂务。
             while not self._stop.wait(0.5):
-                pass
+                if single_instance.quit_requested(self._quit_event):
+                    if not self._waiting_to_quit():
+                        break
+                # 定期杂务出错绝不能打死驻留进程：settings.json 里一个类型写错的
+                # 字段（比如把 120 写成 "120秒"）会被热重载带进来，如果它顺手
+                # 崩掉主循环，进程就退出、看门狗再拉、再崩——直接进连崩放弃。
+                # 宁可这一轮杂务跳过，也要把服务留住。
+                try:
+                    self._tick()
+                except Exception as exc:              # noqa: BLE001
+                    print("[杂务] %r" % (exc,), file=sys.stderr)
         except KeyboardInterrupt:
             pass
         self._shutdown()
         # tkinter 只能在主线程收摊，所以 hud.quit() 留在这，不在 _shutdown 里
         self.hud.quit()
+        return 0
+
+    def _waiting_to_quit(self) -> bool:
+        """收到 `--stop`：能不打断录音就别打断。返回 True 表示还要继续等。"""
+        if self.phase is Phase.IDLE:
+            print("收到 --stop，退出。")
+            return False
+        if not self._quit_seen:
+            self._quit_seen = True
+            print("收到 --stop，等这次录音收尾再退。")
+        return True
+
+    # ---------- 定期杂务（都在主线程）----------
+
+    def _tick(self) -> None:
+        now = time.monotonic()
+        if now >= self._next_hook_check:
+            self._next_hook_check = now + HOOK_CHECK_SECONDS
+            self._check_hook()
+        if now >= self._next_settings_check:
+            self._next_settings_check = now + SETTINGS_CHECK_SECONDS
+            self._check_settings()
+        if now >= self._next_maintenance:
+            self._next_maintenance = now + MAINTENANCE_SECONDS
+            self._run_maintenance()
+
+    def _check_hook(self) -> None:
+        """钩子死了就重装。驻留形态下"按 Fn 没反应"是最难自查的故障。"""
+        if self.hotkeys.alive:
+            return
+        print("[热键] 钩子线程不在了，重装。", file=sys.stderr)
+        try:
+            self.hotkeys.restart()
+        except Exception as exc:                      # 重装本身炸了也不该拖死主循环
+            print("[热键] 重装失败：%r" % (exc,), file=sys.stderr)
+            return
+        self._hook_restarts += 1
+        if self.hotkeys.hook_installed:
+            print("[热键] 已重装（累计 %d 次）。" % self._hook_restarts,
+                  file=sys.stderr)
+        else:
+            print("[热键] 重装后仍装不上，err=%d。热键当前不可用。"
+                  % self.hotkeys.hook_error, file=sys.stderr)
+
+    def _check_settings(self) -> None:
+        """settings.json 改了就地生效，省得为了换个后端去重启驻留进程。"""
+        path = config.Settings.path()
+        mtime = _mtime(path)
+        if not mtime or mtime == self._settings_mtime:
+            return
+        self._settings_mtime = mtime
+        try:
+            new = config.Settings.load()
+        except Exception as exc:
+            print("[配置] 读不出来，忽略这次改动：%r" % (exc,), file=sys.stderr)
+            return
+        self._apply_settings(new)
+
+    def _apply_settings(self, new: config.Settings) -> None:
+        old = self.settings
+        changes = []
+
+        if new.provider != old.provider:
+            changes.append("后端 %s → %s" % (old.provider, new.provider))
+        if new.primary_key != old.primary_key:
+            applied = self.hotkeys.set_primary(new.primary_spec)
+            changes.append("主键 %s → %s%s" % (
+                old.primary_key, new.primary_key,
+                "" if applied else "（正在录音，本次结束后生效）"))
+        if new.auto_paste != old.auto_paste:
+            changes.append("自动粘贴 → %s" % new.auto_paste)
+        if new.doubao_punctuation != old.doubao_punctuation:
+            changes.append("豆包标点 → %s" % new.doubao_punctuation)
+        if new.max_record_seconds != old.max_record_seconds:
+            changes.append("最长录音 → %s 秒" % new.max_record_seconds)
+        if new.retention_days != old.retention_days:
+            changes.append("留存天数 → %s" % new.retention_days)
+        if new.local_model_dir != old.local_model_dir:
+            changes.append("本地模型目录 → %s" % new.local_model_dir)
+        if new.hud_enabled != old.hud_enabled:
+            # 悬浮条的 tk 线程起停不方便中途切换，如实说明，不假装生效
+            changes.append("悬浮条 → %s（需重启生效）" % new.hud_enabled)
+
+        self.settings = new
+        # 护栏的下一次武装用新值；已经在录的那次不改变时长
+        self._watchdog.seconds = float(new.max_record_seconds)
+        if changes:
+            print("[配置] 已重载：%s" % "；".join(changes))
+        else:
+            print("[配置] settings.json 变了，但可热改的项没有变化。")
+
+    def _run_maintenance(self) -> None:
+        try:
+            gone = config.prune_data(self.settings.retention_days)
+        except Exception as exc:
+            print("[清理] 出错：%r" % (exc,), file=sys.stderr)
+            return
+        if gone:
+            print("[清理] 删掉 %d 个过期文件（保留 %s 天）。"
+                  % (len(gone), self.settings.retention_days))
 
     def _shutdown(self) -> None:
         """要求进程退出。**可从任意线程调用**。
@@ -289,6 +521,48 @@ class VoicePill:
         self._stopping = True
         self._stop.set()
         self.hotkeys.stop()
+        single_instance.close_handle(self._quit_event)
+        self._quit_event = 0
+
+
+# ---------- 进程级入口的小工具 ----------
+
+def _mtime(path: str) -> float:
+    """文件修改时间；不在就返回 0（= 用默认值，不是错误）。"""
+    try:
+        return os.path.getmtime(path)
+    except OSError:
+        return 0.0
+
+
+def _journal_exit(code: int) -> None:
+    """在日志里留一条收尾行。
+
+    驻留形态下进程没有窗口，"崩了"和"活着但钩子哑了"从外面看一模一样。
+    有这条和启动横幅配对的收尾行，翻 app.log 就能分清是正常停的还是被打死的：
+    启动横幅有、收尾行没有 = 非正常死亡。
+    """
+    print("\n=== 退出 %s code=%d ==="
+          % (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), code))
+
+
+def stop_running_instance() -> int:
+    """`--stop`：让正在驻留的那个实例走正常退出流程。"""
+    probe = single_instance.InstanceLock()
+    try:
+        if probe.acquire():
+            probe.release()
+            print("没有正在运行的 Voice Pill 实例。")
+            return 1
+    except OSError as exc:
+        print("读不到实例状态：%s" % exc, file=sys.stderr)
+        return 1
+    if not single_instance.request_quit():
+        print("退出信号发不出去。", file=sys.stderr)
+        return 1
+    print("已请求退出（若它正在录音，会等这次收尾）。日志：%s"
+          % config.app_log_path())
+    return 0
 
 
 # ---------- 自检 ----------
@@ -344,6 +618,24 @@ def run_check(settings: config.Settings) -> int:
     print("  主键      ：%s → %s" % (settings.primary_key,
                                      hotkey.describe_primary(settings.primary_spec)))
     print("  自动粘贴  ：%s" % settings.auto_paste)
+    print("  最长录音  ：%s 秒（0 = 不限）" % settings.max_record_seconds)
+    print("  留存天数  ：%s（0 = 不清理）" % settings.retention_days)
+
+    print("\n[常驻]")
+    probe = single_instance.InstanceLock()
+    running = not probe.acquire()
+    if not running:
+        probe.release()
+    print("  实例      ：%s" % ("✅ 已有实例在跑" if running else "无（未驻留）"))
+    guard = single_instance.InstanceLock(single_instance.SUPERVISOR_MUTEX_NAME)
+    watching = not guard.acquire()
+    if not watching:
+        guard.release()
+    print("  看门狗    ：%s" % ("✅ 在守着" if watching else "无（没人替你重拉）"))
+    print("  开机自启  ：%s" % autostart.status())
+    log = config.app_log_path()
+    size = os.path.getsize(log) if os.path.isfile(log) else 0
+    print("  应用日志  ：%s（%d KB）" % (log, size // 1024))
 
     print("\n[豆包凭据]")
     cred = config.credentials_path()
@@ -398,7 +690,15 @@ def main() -> int:
     ap.add_argument("--list-devices", action="store_true", help="列麦克风")
     ap.add_argument("--retry", action="store_true", help="重试留存录音")
     ap.add_argument("--once", action="store_true", help="录一次就退出")
+    ap.add_argument("--stop", action="store_true", help="让正在运行的实例退出")
+    ap.add_argument("--install-autostart", action="store_true", help="装开机自启")
+    ap.add_argument("--uninstall-autostart", action="store_true", help="取消开机自启")
     args = ap.parse_args()
+
+    # 先把日志接上：驻留时（`pythonw.exe` 开机自启）没有控制台，后面所有 print
+    # 都会是静默空操作，崩了也没人知道为什么。有控制台时会再镜像一份到屏幕。
+    console.attach_app_log(config.app_log_path(),
+                           label=" ".join(sys.argv[1:]) or "驻留启动")
 
     settings = config.Settings.load()
 
@@ -410,13 +710,44 @@ def main() -> int:
     if args.check:
         return run_check(settings)
 
+    if args.stop:
+        return stop_running_instance()
+
+    if args.install_autostart:
+        print("即将安装开机自启：\n  %s" % autostart.describe())
+        return autostart.install()
+
+    if args.uninstall_autostart:
+        return autostart.uninstall()
+
     if args.retry:
         print("Retry 尚未实现。留存录音在：%s" % config.recordings_dir())
         return 1
 
-    app = VoicePill(settings, once=args.once)
-    app.run()
-    return 0
+    # 从这里往下都会真的录音，必须独占：两个实例会各采一遍同一支麦克风、
+    # 各粘一遍，用户看到的是同一句话出现两次。
+    lock = single_instance.InstanceLock()
+    try:
+        if not lock.acquire():
+            print("已经有一个 Voice Pill 实例在跑，本进程退出。\n"
+                  "  两个实例会同时采音、同时粘贴，一次说话会被粘两遍。\n"
+                  "  要停掉那个：python main.py --stop", file=sys.stderr)
+            return 3
+    except OSError as exc:
+        print("拿不到单实例锁：%s" % exc, file=sys.stderr)
+        return 1
+
+    code = 0
+    try:
+        code = VoicePill(settings, once=args.once).run()
+    except Exception:
+        # 非零退出是给计划任务的"失败后重启"看的，别吞掉
+        traceback.print_exc()
+        code = 1
+    finally:
+        lock.release()
+    _journal_exit(code)
+    return code
 
 
 if __name__ == "__main__":
