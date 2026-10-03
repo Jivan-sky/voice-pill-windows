@@ -202,23 +202,103 @@ func TestProbeSupervisorMutexFreshThenHeld(t *testing.T) {
 	}
 }
 
-func TestEnsureSupervisorSkipsWhenHeld(t *testing.T) {
+// withFakeSpawner 把「真拉起 pythonw」那一步换成假实现，返回调用次数与入参；
+// 测试结束自动还原。测试绝不许真起进程。
+func withFakeSpawner(t *testing.T) (*int, *[]string) {
+	t.Helper()
+	old := spawnSupervisor
+	calls := 0
+	args := []string{}
+	spawnSupervisor = func(pythonw, supervise, root string) error {
+		calls++
+		args = append(args, pythonw, supervise, root)
+		return nil
+	}
+	t.Cleanup(func() { spawnSupervisor = old })
+	return &calls, &args
+}
+
+// writeSuperviseStub 在假根里放一个 src\supervise.py 桩，让「文件存在」这一关
+// 过得去——只有这样测试才真能走到 spawn 那一步。桩内容不会被运行。
+func writeSuperviseStub(t *testing.T, root string) {
+	t.Helper()
+	dir := filepath.Join(root, "src")
+	if err := os.MkdirAll(dir, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "supervise.py"), []byte("stub"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// 假根里有 supervise.py 桩、互斥体已被占：幂等守卫必须生效——一个字节都不许
+// 拉，并记 supervisor_already_running。
+//
+// Mendel 审任务 7 时指出：原来的用例用「没有 supervise.py 的假根」，无论
+// 互斥体守卫是否生效都走 supervise_missing，于是把 `if !owned` 改成恒假也
+// 全绿。这条用例正是为了钉住它。
+func TestEnsureSupervisorHeldSkipsSpawn(t *testing.T) {
 	name := uniqueMutexName(t)
 	t.Setenv(SupervisorMutexEnv, name)
 	holdSupervisorMutex(t, name)
+
+	root := t.TempDir()
+	writeSuperviseStub(t, root)
+
+	calls, _ := withFakeSpawner(t)
 	c := &capture{}
-	if EnsureSupervisor(t.TempDir(), c.log) {
-		t.Fatal("已经有人在守，不该再拉")
+	if EnsureSupervisor(root, c.log) {
+		t.Fatal("已经有人在守，不该报「这次是我们拉的」")
+	}
+	if *calls != 0 {
+		t.Fatalf("已经有人在守，绝不许调 spawner，实际调了 %d 次", *calls)
+	}
+	if !c.has("supervisor_already_running") {
+		t.Fatalf("应当记 supervisor_already_running：%v", c.lines)
+	}
+	if c.has("supervisor_spawned") {
+		t.Fatalf("不该记 supervisor_spawned：%v", c.lines)
+	}
+}
+
+// 反向：互斥体空着 + 假根里有 supervise.py 桩 → 必须亲手拉起恰好一次，
+// 并把三个入参原样交给 spawner。
+func TestEnsureSupervisorSpawnsWhenFree(t *testing.T) {
+	name := uniqueMutexName(t)
+	t.Setenv(SupervisorMutexEnv, name)
+
+	root := t.TempDir()
+	writeSuperviseStub(t, root)
+
+	calls, args := withFakeSpawner(t)
+	c := &capture{}
+	if !EnsureSupervisor(root, c.log) {
+		t.Fatalf("互斥体空着时应当亲手拉起：%v", c.lines)
+	}
+	if *calls != 1 {
+		t.Fatalf("应当调 spawner 恰好一次，实际 %d 次", *calls)
+	}
+	wantPythonw := filepath.Join(root, ".venv", "Scripts", "pythonw.exe")
+	wantSupervise := filepath.Join(root, "src", "supervise.py")
+	if len(*args) != 3 || (*args)[0] != wantPythonw || (*args)[1] != wantSupervise || (*args)[2] != root {
+		t.Fatalf("spawner 入参不对：%q（想要 %q %q %q）", *args, wantPythonw, wantSupervise, root)
+	}
+	if !c.has("supervisor_spawned") {
+		t.Fatalf("应当记 supervisor_spawned：%v", c.lines)
 	}
 }
 
 func TestEnsureSupervisorFakeRootDoesNotSpawn(t *testing.T) {
 	name := uniqueMutexName(t)
 	t.Setenv(SupervisorMutexEnv, name)
+	calls, _ := withFakeSpawner(t)
 	c := &capture{}
 	root := t.TempDir() // 假根：没有 src\supervise.py
 	if EnsureSupervisor(root, c.log) {
 		t.Fatal("假根里没有 supervise.py，不该拉")
+	}
+	if *calls != 0 {
+		t.Fatalf("少了 supervise.py 就不该调 spawner，实际调了 %d 次", *calls)
 	}
 	if !c.has("supervise_missing") {
 		t.Fatalf("应当记 supervise_missing：%v", c.lines)

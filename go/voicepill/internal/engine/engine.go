@@ -241,6 +241,27 @@ func SupervisorAlive() bool {
 	return !owned
 }
 
+// spawnSupervisor 是「真正把 pythonw 拉起来」的那一步，做成变量是为了让单测
+// 注入假实现——测试绝不许真起进程（尤其不许碰正在跑的看门狗）。
+var spawnSupervisor = func(pythonw, supervise, root string) error {
+	cmd := exec.Command(pythonw, supervise)
+	cmd.Dir = root
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		CreationFlags: windows.DETACHED_PROCESS | windows.CREATE_NO_WINDOW,
+	}
+	devnull, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
+	if err != nil {
+		return err
+	}
+	defer devnull.Close()
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = devnull, devnull, devnull
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	_ = cmd.Process.Release()
+	return nil
+}
+
 // EnsureSupervisor 幂等确保看门狗在跑。返回 true 表示这次是我们亲手拉起来的。
 //
 // 与 Python hook_session_start._ensure_supervisor 一致：
@@ -263,23 +284,10 @@ func EnsureSupervisor(root string, log Logger) bool {
 		return false
 	}
 	pythonw := filepath.Join(root, ".venv", "Scripts", "pythonw.exe")
-	cmd := exec.Command(pythonw, supervise)
-	cmd.Dir = root
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		CreationFlags: windows.DETACHED_PROCESS | windows.CREATE_NO_WINDOW,
-	}
-	devnull, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
-	if err != nil {
+	if err := spawnSupervisor(pythonw, supervise, root); err != nil {
 		emit(log, "supervisor_spawn_failed", "error", err)
 		return false
 	}
-	defer devnull.Close()
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = devnull, devnull, devnull
-	if err := cmd.Start(); err != nil {
-		emit(log, "supervisor_spawn_failed", "error", err)
-		return false
-	}
-	_ = cmd.Process.Release()
 	emit(log, "supervisor_spawned")
 	return true
 }
