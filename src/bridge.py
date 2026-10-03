@@ -401,6 +401,10 @@ class _LineTooLong(Exception):
     """一行超过 MAX_REQUEST_BYTES：对端不像我们的客户端。"""
 
 
+class _PipeTimeout(Exception):
+    """等一行等超时了。只有客户端会用（服务端靠连接的 60 秒空闲计时器兜底）。"""
+
+
 def _close_handle(handle) -> None:
     try:
         _k32.CloseHandle(handle)
@@ -423,15 +427,50 @@ def _parse_json_line(raw: bytes) -> dict:
     return data
 
 
+def _encode_line(payload: dict) -> bytes:
+    """一条协议行：紧凑 JSON 加一个换行，UTF-8。收发两端共用同一种编码。"""
+    return json.dumps(payload, ensure_ascii=False,
+                      separators=(",", ":")).encode("utf-8") + b"\n"
+
+
+def _write_all(handle, data: bytes) -> None:
+    """把整块写进管道。写不动、或没写全，一律 _PipeClosed。"""
+    buf = ctypes.create_string_buffer(data, len(data))
+    written = wintypes.DWORD(0)
+    if not _k32.WriteFile(handle, ctypes.cast(buf, ctypes.c_void_p),
+                          len(data), ctypes.byref(written), None):
+        raise _PipeClosed(_winerror_text("WriteFile"))
+    if written.value != len(data):
+        raise _PipeClosed("只写出去 %d/%d 字节" % (written.value, len(data)))
+
+
 def _open_pipe(name: str, timeout_ms: int = 0):
-    """尽力连一次命名管道；连不上返回 0（给 stop() 叫醒 accept 用）。"""
-    if timeout_ms and not _k32.WaitNamedPipeW(name, timeout_ms):
-        return 0
-    handle = _k32.CreateFileW(name, _GENERIC_READ_WRITE, 0, None,
-                              _OPEN_EXISTING, 0, None)
-    if not handle or handle == _INVALID_HANDLE:
-        return 0
-    return handle
+    """连一次命名管道；连不上返回 0（给 stop() 叫醒 accept 用）。
+
+    `timeout_ms=0` 只试一次（stop() 用它）。
+
+    `timeout_ms>0` 在截止时间前重试。为什么必须重试：
+    `WaitNamedPipeW` 在**一条实例都不存在**时并不等，直接
+    ERROR_FILE_NOT_FOUND 返回；而服务端是「accept 一条 -> 再建下一条」
+    的循环，中间有零实例的窗口。只试一次的话，并发客户端
+    会有一批撞在窗口上被误判成「引擎不在」（实测 8 条里错 4 条）。
+    """
+    if not timeout_ms:
+        handle = _k32.CreateFileW(name, _GENERIC_READ_WRITE, 0, None,
+                                  _OPEN_EXISTING, 0, None)
+        return handle if handle and handle != _INVALID_HANDLE else 0
+
+    deadline = time.monotonic() + timeout_ms / 1000.0
+    while True:
+        remaining_ms = int(max(deadline - time.monotonic(), 0.0) * 1000)
+        if remaining_ms and _k32.WaitNamedPipeW(name, remaining_ms):
+            handle = _k32.CreateFileW(name, _GENERIC_READ_WRITE, 0, None,
+                                      _OPEN_EXISTING, 0, None)
+            if handle and handle != _INVALID_HANDLE:
+                return handle
+        if time.monotonic() >= deadline:
+            return 0
+        time.sleep(_READ_POLL_SECONDS)
 
 
 class _PipeReader:
@@ -440,11 +479,15 @@ class _PipeReader:
     服务端每次 ReadFile 都可能一次带回两行——客户端常常把 auth 和请求连着写
     （自测里正是如此），只按第一个换行切、把多余的字节丢掉，第二条就永远等
     不到了。所以多余的字节必须留在**这条连接**上，下次接着用。
+
+    给了 `timeout` 就是**客户端**的用法：到点还没读完一行抛 `_PipeTimeout`。
+    服务端不传，靠连接的 60 秒空闲计时器兜底。
     """
 
-    def __init__(self, handle) -> None:
+    def __init__(self, handle, timeout: Optional[float] = None) -> None:
         self._handle = handle
         self._buf = bytearray()
+        self._deadline = None if timeout is None else time.monotonic() + timeout
 
     def read_line(self) -> bytes:
         """读到换行符为止。对端关了抛 _PipeClosed；太长抛 _LineTooLong。"""
@@ -456,6 +499,8 @@ class _PipeReader:
                 return line
             if len(self._buf) > MAX_REQUEST_BYTES:
                 raise _LineTooLong()
+            if self._deadline is not None and time.monotonic() >= self._deadline:
+                raise _PipeTimeout()
             available = wintypes.DWORD(0)
             if not _k32.PeekNamedPipe(self._handle, None, 0, None,
                                       ctypes.byref(available), None):
@@ -472,6 +517,78 @@ class _PipeReader:
             if not got.value:
                 raise _PipeClosed("管道读回来 0 字节")
             self._buf += chunk.raw[:got.value]
+
+
+# ---------- 第二条通道的客户端（Go exe / 钩子 / 自测都走这里）----------
+
+def json_call(cmd: str, timeout: float = CONNECT_TIMEOUT_SECONDS,
+              **args: Any) -> Any:
+    """走 NDJSON 通道问一句，返回 data。失败抛 BridgeError（与 call 一致）。
+
+    脾气跟旧通道的 `call()` 一样：一次调用一条连接；连不上、对端不回话、
+    回的不是 JSON，一律 BridgeError，**绝不挂住调用方**。
+
+    超时**不**靠「关句柄去打断阻塞的 ReadFile」——那条在任务 2 已实测是错的
+    （`CloseHandle` 不取消挂起的同步 I/O）。这里的读是 `PeekNamedPipe` 轮询
+    加自己的截止时间，本来就返回得回来；外面再套一层工作线程，是防
+    `CreateFileW` 在实例被占满时阻塞这一条路径。
+    """
+    if cmd not in COMMANDS:
+        raise BridgeError("未知命令：%s" % cmd)
+
+    request = _encode_line({"cmd": cmd, "args": args})
+    if len(request) > MAX_REQUEST_BYTES:
+        raise BridgeError("请求超过 %d 字节，没写进管道。" % MAX_REQUEST_BYTES)
+
+    box: dict = {}
+
+    def worker() -> None:
+        handle = 0
+        try:
+            deadline = time.monotonic() + timeout
+            handle = _open_pipe(json_pipe_name(), timeout_ms=int(timeout * 1000))
+            if not handle:
+                raise BridgeError("连不上控制面（常驻进程没在跑？）：%s"
+                                  % json_pipe_name())
+            reader = _PipeReader(handle, max(deadline - time.monotonic(), 0.05))
+            nonce = _parse_json_line(reader.read_line()).get("nonce")
+            if not isinstance(nonce, str) or not nonce:
+                raise BridgeError("控制面没给挑战应答的 nonce。")
+            _write_all(handle, _encode_line(
+                {"auth": auth_token(load_or_create_key(), nonce)}))
+            _write_all(handle, request)
+            box["reply"] = _parse_json_line(reader.read_line())
+        except _PipeTimeout:
+            box["error"] = BridgeError("控制面 %.1f 秒没回话。" % timeout)
+        except _LineTooLong:
+            box["error"] = BridgeError(
+                "控制面这一行超过 %d 字节。" % MAX_REQUEST_BYTES)
+        except _PipeClosed as exc:
+            box["error"] = BridgeError("控制面通信中断：%s" % exc)
+        except ValueError as exc:
+            box["error"] = BridgeError("控制面回的不是一行 JSON 对象：%s" % exc)
+        except BridgeError as exc:
+            box["error"] = exc
+        except Exception as exc:                      # noqa: BLE001
+            box["error"] = BridgeError("控制面通信中断：%s" % exc)
+        finally:
+            if handle:
+                _close_handle(handle)
+
+    th = threading.Thread(target=worker, name="voicepill-json-call", daemon=True)
+    th.start()
+    th.join(timeout + 2.0)
+    if th.is_alive():
+        raise BridgeError("控制面 %.1f 秒没回话。" % timeout)
+    error = box.get("error")
+    if error is not None:
+        raise error
+    reply = box.get("reply")
+    if not isinstance(reply, dict):
+        raise BridgeError("控制面回了个不认识的东西：%r" % (reply,))
+    if not reply.get("ok"):
+        raise BridgeError(reply.get("error") or "控制面拒绝了这条命令。")
+    return reply.get("data")
 
 
 class JsonBridgeServer:
@@ -615,15 +732,10 @@ class JsonBridgeServer:
         self._write(handle, {"ok": True, "data": self._handler(cmd, args)})
 
     def _write(self, handle, payload: dict) -> None:
-        line = json.dumps(payload, ensure_ascii=False,
-                          separators=(",", ":")).encode("utf-8") + b"\n"
+        line = _encode_line(payload)
         if len(line) > MAX_REQUEST_BYTES:
             raise ValueError("响应超过 %d 字节" % MAX_REQUEST_BYTES)
-        buf = ctypes.create_string_buffer(line, len(line))
-        written = wintypes.DWORD(0)
-        if not _k32.WriteFile(handle, ctypes.cast(buf, ctypes.c_void_p),
-                              len(line), ctypes.byref(written), None):
-            raise _PipeClosed(_winerror_text("WriteFile"))
+        _write_all(handle, line)
 
     def _try_write(self, handle, payload: dict) -> None:
         """错误路径上回话；回不出去就算了（对端可能已经走了）。"""

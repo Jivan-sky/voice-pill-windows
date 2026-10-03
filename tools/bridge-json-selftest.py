@@ -115,12 +115,21 @@ class RawPipe:
     """一条裸连接：只做「写一行 / 读一行 / 关掉」。"""
 
     def __init__(self, name: str, connect_timeout: float = 3.0) -> None:
-        if not _k32.WaitNamedPipeW(name, int(connect_timeout * 1000)):
-            raise ctypes.WinError(ctypes.get_last_error())
-        self.handle = _k32.CreateFileW(name, _GENERIC_READ | _GENERIC_WRITE,
-                                       0, None, _OPEN_EXISTING, 0, None)
-        if not self.handle or self.handle == _INVALID_HANDLE:
-            raise ctypes.WinError(ctypes.get_last_error())
+        # 同 bridge._open_pipe：服务端换实例的窗口里一条实例都没有，
+        # WaitNamedPipeW 会立刻失败而不是等待，所以必须按截止时间重试。
+        deadline = time.monotonic() + connect_timeout
+        while True:
+            remaining_ms = int(max(deadline - time.monotonic(), 0.0) * 1000)
+            if remaining_ms and _k32.WaitNamedPipeW(name, remaining_ms):
+                handle = _k32.CreateFileW(name,
+                                          _GENERIC_READ | _GENERIC_WRITE,
+                                          0, None, _OPEN_EXISTING, 0, None)
+                if handle and handle != _INVALID_HANDLE:
+                    self.handle = handle
+                    return
+            if time.monotonic() >= deadline:
+                raise TimeoutError("connect to %s timed out" % name)
+            time.sleep(0.02)
 
     def write(self, data: bytes) -> bool:
         buf = ctypes.create_string_buffer(data, len(data))
@@ -245,6 +254,8 @@ def check_roundtrip(ck: Checker) -> None:
 def check_bad_clients(ck: Checker) -> None:
     """坏输入逐条：错密钥、非 JSON、未知命令、超长行、连上就跑"""
     seen: list = []
+    ck("请求上限还是 64 KiB（没被人偷偷放大）",
+       bridge.MAX_REQUEST_BYTES == 64 * 1024, bridge.MAX_REQUEST_BYTES)
     server = _start(seen)
     name = bridge.json_pipe_name()
     try:
@@ -283,18 +294,21 @@ def check_bad_clients(ck: Checker) -> None:
         with RawPipe(name) as raw:
             _auth(raw)
             sent = raw.write(b"x" * over)
+            ck("超长行整条写完整送出了（不然「被拒」无从谈起）", sent, sent)
             try:
                 line = raw.read_line(5.0)
             except TimeoutError:
                 line = b""
-            if line:
-                ck("超长行被拒（回了 ok:false）",
-                   _json_line(line).get("ok") is False, line)
-            else:
-                ck("超长行被拒（连接被直接关掉）", True)
+            ck("超长行被拒：服务端给了明确回复（不是干等、也不是静默吞掉）",
+               bool(line), line)
+            reply = _json_line(line) if line else {}
+            ck("超长行被拒：回的是 ok:false", reply.get("ok") is False, reply)
+            ck("超长行被拒：说清了是超长",
+               "超长" in str(reply.get("error")), reply)
             ck("超长行没进 handler（写完整送出=%s）" % sent,
                not any(c.startswith("xxx") for c, _ in seen))
             ck("超长行之后这条被关掉", raw.read_line(3.0) == b"")
+        ck("超长行之后服务端还活着", server.alive)
 
         with RawPipe(name) as raw:                    # 6) 收尾：好连接照旧
             _auth(raw)
@@ -306,12 +320,15 @@ def check_bad_clients(ck: Checker) -> None:
 
 
 def check_concurrency(ck: Checker) -> None:
-    """坏连接与好连接同时连：坏的不许影响好的"""
+    """坏连接与 8 条好连接一起打：坏的不许影响好的，好的也不许串线"""
     seen: list = []
-    server = _start(seen)
+    _require_test_pipe()
+    server = bridge.JsonBridgeServer(_echo_stub(seen))
+    server.start()
     name = bridge.json_pipe_name()
     good: dict = {}
     bad: dict = {}
+    fan: dict = {}
 
     def good_client() -> None:
         try:
@@ -331,20 +348,187 @@ def check_concurrency(ck: Checker) -> None:
         except BaseException as exc:                  # noqa: BLE001
             bad["error"] = repr(exc)
 
+    def fan_client(i: int) -> None:
+        try:
+            fan[i] = bridge.json_call("speak", timeout=15.0,
+                                      text="第%d条" % i, auto=False)
+        except BaseException as exc:                  # noqa: BLE001
+            fan[i] = exc
+
     try:
+        ck("服务端起来了", _wait(lambda: server.started, 5),
+           "error=%s" % server.error)
         threads = [threading.Thread(target=bad_client),
                    threading.Thread(target=good_client)]
+        threads += [threading.Thread(target=fan_client, args=(i,))
+                    for i in range(8)]
         for th in threads:
             th.start()
         for th in threads:
-            th.join(20)
+            th.join(30)
         ck("错 auth 那条同时拿到了 ok:false",
            (bad.get("reply") or {}).get("ok") is False, bad)
         ck("好那条同时拿到了正常回复",
            (good.get("reply") or {}).get("ok") is True, good)
+        ck("8 条并发全都拿到了回包",
+           len(fan) == 8 and all(isinstance(v, dict) for v in fan.values()),
+           {k: repr(v) for k, v in fan.items()})
+        ck("8 条并发各自拿到的就是自己那条",
+           all(isinstance(fan.get(i), dict)
+               and ((fan[i].get("got")) or {}).get("text") == "第%d条" % i
+               for i in range(8)),
+           {k: repr(v) for k, v in fan.items()})
         ck("并发之后服务端还在", server.alive)
     finally:
         server.stop()
+
+
+_SEVEN = ("status", "start", "stop", "cancel", "take", "speak", "shutup")
+
+
+def _echo_stub(seen: list):
+    """桩 handler：命令与参数原样回显；take 给一份固定的「取走」结果。
+
+    桩不碰密钥、不发网络：这把尺子量的是**通道**，不是引擎业务。
+    """
+    def handler(cmd: str, args: dict):
+        seen.append((cmd, dict(args or {})))
+        if (args or {}).get("boom"):
+            raise ValueError("桩故意拒绝这条")
+        if cmd == "take":
+            return {"texts": ["一句话", "两句"], "count": 2}
+        return {"echo": cmd, "got": dict(args or {})}
+    return handler
+
+
+def check_commands(ck: Checker) -> None:
+    """七命令：回包对得上、参数原样到达、错误映射到 BridgeError"""
+    seen: list = []
+    _require_test_pipe()
+    server = bridge.JsonBridgeServer(_echo_stub(seen))
+    server.start()
+    try:
+        ck("服务端起来了", _wait(lambda: server.started, 5),
+           "error=%s" % server.error)
+        for cmd in _SEVEN:
+            data = bridge.json_call(cmd, timeout=5.0)
+            if cmd == "take":
+                ck("take 往返：取走语义的返回原样带回",
+                   data == {"texts": ["一句话", "两句"], "count": 2}, data)
+            else:
+                ck("%s 往返：data.echo 对得上" % cmd,
+                   (data or {}).get("echo") == cmd, data)
+        ck("七个命令一个不少、顺序也对",
+           [c for c, _ in seen] == list(_SEVEN), [c for c, _ in seen])
+
+        data = bridge.json_call("speak", timeout=5.0, text="念这句", auto=False)
+        ck("speak：text 原样到达 handler",
+           seen[-1] == ("speak", {"text": "念这句", "auto": False}), seen[-1])
+        ck("speak：auto=False 原样到达（Stop 钩子与插件工具的分岔点）",
+           seen[-1][1].get("auto") is False, seen[-1][1])
+        ck("speak：返回里能看到 text",
+           ((data or {}).get("got") or {}).get("text") == "念这句", data)
+
+        try:
+            bridge.json_call("speak", timeout=5.0, boom=True)
+            ck("handler 抛异常 -> BridgeError", False, "没抛")
+        except bridge.BridgeError as exc:
+            ck("handler 抛异常 -> BridgeError",
+               "桩故意拒绝" in str(exc), str(exc))
+        ck("被拒的那条也真的进过 handler",
+           seen[-1][1].get("boom") is True)
+
+        try:
+            bridge.json_call("nope", timeout=5.0)
+            ck("未知命令在本侧就被拒", False, "没抛")
+        except bridge.BridgeError as exc:
+            ck("未知命令在本侧就被拒", "未知命令" in str(exc), str(exc))
+        ck("未知命令没写进管道（handler 没见过）",
+           not any(c == "nope" for c, _ in seen))
+    finally:
+        server.stop()
+
+
+def check_client_oversize(ck: Checker) -> None:
+    """单条请求超过 64 KiB：在本侧就报错，不写进管道"""
+    seen: list = []
+    _require_test_pipe()
+    server = bridge.JsonBridgeServer(_echo_stub(seen))
+    server.start()
+    try:
+        ck("服务端起来了", _wait(lambda: server.started, 5),
+           "error=%s" % server.error)
+        text = "x" * (bridge.MAX_REQUEST_BYTES + 100)
+        started = time.monotonic()
+        try:
+            bridge.json_call("speak", timeout=5.0, text=text)
+            ck("超长请求被本侧拒", False, "没抛")
+        except bridge.BridgeError as exc:
+            ck("超长请求被本侧拒（BridgeError）", True, str(exc))
+        ck("在本侧就报错，没等超时",
+           time.monotonic() - started < 3.0)
+        ck("超长请求没写进管道（handler 没被叫）", not seen, seen)
+        ck("服务端还活着", server.alive)
+    finally:
+        server.stop()
+
+
+def check_client_timeout(ck: Checker) -> None:
+    """收下请求但不回话：json_call 必须在 timeout 附近抛错，不许挂住"""
+    saved = os.environ.get(bridge.JSON_PIPE_NAME_ENV)
+    os.environ[bridge.JSON_PIPE_NAME_ENV] = \
+        r"\\.\pipe\VoicePill-Json-selftest-slow-%d" % os.getpid()
+    try:
+        def slow(cmd: str, args: dict):
+            time.sleep(30.0)
+            return {"pid": 0}
+
+        server = bridge.JsonBridgeServer(slow)
+        server.start()
+        try:
+            ck("服务端起来了", _wait(lambda: server.started, 5),
+               "error=%s" % server.error)
+            started = time.monotonic()
+            try:
+                bridge.json_call("status", timeout=1.0)
+                ck("不回话时 json_call 抛 BridgeError", False, "没抛")
+            except bridge.BridgeError as exc:
+                ck("不回话时 json_call 抛 BridgeError", True, str(exc))
+            elapsed = time.monotonic() - started
+            ck("是在 1 秒那一档放弃的（1~4 秒）",
+               1.0 <= elapsed <= 4.0, "%.1fs" % elapsed)
+            ck("放弃之后服务端还活着", server.alive)
+        finally:
+            server.stop()
+    finally:
+        if saved is None:
+            os.environ.pop(bridge.JSON_PIPE_NAME_ENV, None)
+        else:
+            os.environ[bridge.JSON_PIPE_NAME_ENV] = saved
+
+
+def check_engine_absent(ck: Checker) -> None:
+    """引擎不在：管道名指向一条没人听的管道 -> 快速抛 BridgeError"""
+    saved = os.environ.get(bridge.JSON_PIPE_NAME_ENV)
+    os.environ[bridge.JSON_PIPE_NAME_ENV] = \
+        r"\\.\pipe\VoicePill-Json-selftest-absent-%d" % os.getpid()
+    try:
+        ck("用的是没人听的管道名",
+           "selftest" in bridge.json_pipe_name())
+        started = time.monotonic()
+        try:
+            bridge.json_call("status", timeout=3.0)
+            ck("没人听的时候 json_call 抛 BridgeError", False, "没抛")
+        except bridge.BridgeError as exc:
+            ck("没人听的时候 json_call 抛 BridgeError", True, str(exc))
+        elapsed = time.monotonic() - started
+        ck("按 timeout 收手（不是永挂：实测在 1~5 秒内报错）",
+           1.0 <= elapsed <= 5.0, "%.2fs" % elapsed)
+    finally:
+        if saved is None:
+            os.environ.pop(bridge.JSON_PIPE_NAME_ENV, None)
+        else:
+            os.environ[bridge.JSON_PIPE_NAME_ENV] = saved
 
 
 def check_idle_timeout(ck: Checker) -> None:
@@ -377,7 +561,9 @@ def main() -> int:
     print("=== NDJSON 控制面通道自测 ===")
     print("本次用的管道名：%s" % bridge.json_pipe_name())
     for fn in (check_pipe_name, check_auth_token, check_roundtrip,
-               check_bad_clients, check_concurrency, check_idle_timeout):
+               check_bad_clients, check_commands, check_client_oversize,
+               check_client_timeout, check_engine_absent, check_concurrency,
+               check_idle_timeout):
         print("\n[%s]" % title(fn))
         fn(ck)
     print("\n%s（%d 项失败）"
