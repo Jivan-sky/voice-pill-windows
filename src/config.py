@@ -11,7 +11,7 @@ import json
 import os
 import sys
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Optional
 
 APP_DIR_NAME = "VoicePill"
@@ -231,6 +231,10 @@ class Settings:
     tts_idle_unload_seconds: int = 900  # 静置这么久就把它从内存放掉（0 = 常留）
     speak_replies: bool = False        # 每轮回复自动念出来（默认关）
     speak_max_chars: int = 600         # 单次最多念多少字，超了截断
+    # ---- 口述落库（见 capture.py 与 docs/移植方案.md 第 18 节）----
+    capture_enabled: bool = False      # 默认关；开了才认下面的口令
+    capture_dir: str = ""              # 落库目标目录（通常是 Obsidian 的 00_Inbox）
+    capture_prefixes: list = field(default_factory=lambda: ["记一下"])
 
     # ---- 持久化 ----
 
@@ -258,7 +262,11 @@ class Settings:
             with open(p, "r", encoding="utf-8") as fh:
                 data = json.load(fh)
             known = {f for f in cls.__dataclass_fields__}
-            return cls(**{k: v for k, v in data.items() if k in known})
+            data = {k: v for k, v in data.items() if k in known}
+            # 配错类型就丢掉这一项、退回默认：配置坏了不该让驻留进程起不来。
+            if not isinstance(data.get("capture_prefixes", []), list):
+                data.pop("capture_prefixes", None)
+            return cls(**data)
         except (OSError, ValueError, TypeError):
             # 配置损坏不该让程序起不来，退回默认值
             return cls()
