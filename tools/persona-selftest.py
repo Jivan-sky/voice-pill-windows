@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(
@@ -36,6 +37,19 @@ SKILL = os.path.join(PLUGIN, "skills", "voice-pill", "SKILL.md")
 # ANC SPEC §4.1 的七段，顺序即 schema 顺序。
 SECTIONS = ["身份", "职责边界", "数据来源", "诚实条款", "风格",
             "收资料 SOP", "动态事实引用"]
+
+
+def git_blob(path: str):
+    """取 git 里这份文件的内容（blob）；不在仓库里或没装 git 就返回 None。"""
+    rel = os.path.relpath(path, ROOT).replace(os.sep, "/")
+    try:
+        proc = subprocess.run(["git", "-C", ROOT, "show", "HEAD:" + rel],
+                              capture_output=True, check=False)
+    except OSError:
+        return None
+    if proc.returncode != 0:
+        return None
+    return proc.stdout
 
 
 class Checker:
@@ -111,8 +125,17 @@ def main() -> int:
     for label, path in (("persona.md", PERSONA), ("SKILL.md", SKILL)):
         with open(path, "rb") as fh:
             b = fh.read()
-        ck("%s 是 LF、无 BOM" % label,
-           b.count(b"\r\n") == 0 and b[:3] != b"\xef\xbb\xbf")
+        # 行尾容忍 CRLF：本机 core.autocrlf=true，检出的工作副本必然是 CRLF——
+        # 那不是违规（仓库里存的仍是 LF）。这里只钉「无 BOM」。
+        ck("%s 无 BOM（行尾容忍 CRLF）" % label, b[:3] != b"\xef\xbb\xbf")
+
+    # 行尾那条规矩换个地方钉：仓库里的 blob 必须是 LF——工作副本的 CRLF 只是
+    # autocrlf 的检出效果，blob 才是别人 clone 出来的样子。
+    for label, path in (("persona.md", PERSONA), ("SKILL.md", SKILL)):
+        blob = git_blob(path)
+        if blob is None:
+            continue          # 不在 git 里（或没装 git）——跳过，不假装验过
+        ck("仓库里 %s 的 blob 是 LF" % label, blob.count(b"\r\n") == 0)
 
     link = os.path.join(os.path.expanduser("~"), "plugins", "voice-pill",
                         "persona.md")
