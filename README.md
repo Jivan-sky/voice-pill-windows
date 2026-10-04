@@ -81,7 +81,7 @@ Voice Pill 的 Windows 移植工程。按住热键说话，松手把文字粘到
 | `tools/local-asr.py` | **本地离线引擎**（sherpa-onnx + SenseVoice），实现同一份 NDJSON 契约，`local` 后端用它 |
 | `tools/build-plugin-exe.ps1` | 一键编 `bin/voicepill.exe`（`-trimpath -s -w`，二进制不带本机路径） |
 | `tools/pluginexe-selftest.py` | Go exe 端到端自测（61 项）：假引擎 + 真 exe 打八个工具与三个钩子，与冻结的 Python 契约对拍 |
-| `tools/install-selftest.py` | 安装自测（16 项）：**装没装上问 Codex 自己**（`codex plugin list`），问不到不许放行；`--check` 的退出码必须与 Codex 的说法一致 |
+| `tools/install-selftest.py` | 安装自测（20 项）：**装没装上问 Codex 自己**（`codex plugin list`），问不到不许放行；`--check` 的退出码必须与 Codex 的说法一致 |
 | `src/console.py` | 控制台编码兜底（管道下打印 ✅ 会 GBK 崩）+ 应用日志 |
 | `src/single_instance.py` | 单实例互斥体：两个实例会各采一遍麦克风、各粘一遍 |
 | `src/bridge.py` | 控制面：命名管道 + authkey，给外部进程驱动本进程用 |

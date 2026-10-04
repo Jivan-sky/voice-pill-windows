@@ -37,7 +37,7 @@ exe 按「环境变量 → 自解析 → `%LOCALAPPDATA%\\VoicePill\\engine.json
 用法
 ----
     python plugins/install.py            缺什么补什么，可以反复跑
-    python plugins/install.py --check    只看现状：文件、市场清单，以及「Codex 装没装」（会调一次 codex CLI，约 0.4 秒）
+    python plugins/install.py --check    只看现状：文件、市场清单，以及「Codex 装没装」（会调一次 codex CLI，本机 3 次实测 0.13~0.15 秒）
 
 装完要**新开一个 Codex 线程**才会拾取新的技能与工具。
 """
@@ -297,12 +297,17 @@ def codex_plugin_list() -> str:
 
 
 def plugin_state(text: str, spec: str = PLUGIN_SPEC) -> str:
-    """从清单文本判这条插件装没装：installed / missing / unknown。
+    """从清单文本判这条插件在 Codex 眼里什么状态：installed / disabled / missing / unknown。
 
     每行是「插件 状态 [版本] 来源」，以空白分列、列数不定（没装的那行没有版本，
     状态是两个词 `not installed`）。只认「行首那一个 token 正好等于 spec」，
     所以市场名（`Marketplace `personal``）和来源路径里出现同样的字串都不会被误认。
     一张表头都没见到就返回 unknown——**输出格式变了要吵，不能当作没看见**。
+
+    为什么光看到 `installed` 不算数：**装上和生效是两回事**。钩子只在
+    `installed, enabled` 时才跑；状态里既没有 enabled 也没有 disabled 就报 unknown，
+    宁可吵——2026-10-04 那个坑就是「文件一个不缺、`--check` 说就绪、钩子一条没跑」，
+    不能再留半扇门。
     """
     saw_table = False
     for line in text.splitlines():
@@ -315,7 +320,13 @@ def plugin_state(text: str, spec: str = PLUGIN_SPEC) -> str:
         if not saw_table or parts[0] != spec:
             continue
         rest = " ".join(parts[1:]).lower()
-        return "installed" if rest.startswith("installed") else "missing"
+        if not rest.startswith("installed"):
+            return "missing"
+        if "disabled" in rest:
+            return "disabled"
+        if "enabled" in rest:
+            return "installed"
+        return "unknown"
     return "missing" if saw_table else "unknown"
 
 
@@ -341,6 +352,10 @@ def install_into_codex(check: bool) -> bool:
     if state == "missing":
         say(False, "Codex 里没有这条插件，钩子与工具都不会生效",
             "跑一次：.venv\\Scripts\\python.exe plugins\\install.py")
+        return False
+    if state == "disabled":
+        say(False, "插件在 Codex 里是停用状态，钩子与工具都不会生效",
+            "自己看一眼：codex plugin list")
         return False
     say(False, "问不到 codex、或清单认不出来，无法确认装没装",
         "自己看一眼：codex plugin list")

@@ -108,6 +108,12 @@ def main() -> int:
         ("状态大小写与多余空白 → installed",
          fake_marketplace(SPEC + "   INSTALLED,   ENABLED   v   C:\\x"),
          "installed"),
+        ("installed, disabled → disabled（装了不等于生效）",
+         fake_marketplace(SPEC + "  installed, disabled  0.1.0  C:\\x"),
+         "disabled"),
+        ("只有 installed、没有 enabled/disabled → unknown（说不清就不放行）",
+         fake_marketplace(SPEC + "  installed  C:\\x"),
+         "unknown"),
     ]
     for label, text, want in cases:
         got = mod.plugin_state(text)
@@ -128,6 +134,12 @@ def main() -> int:
     finally:
         mod.codex_plugin_list = original
     try:
+        mod.codex_plugin_list = lambda: fake_marketplace(SPEC + "  installed, disabled  v  C:\\x")
+        ck("Codex 说停用了 → install_into_codex(check) 为 False",
+           mod.install_into_codex(True) is False)
+    finally:
+        mod.codex_plugin_list = original
+    try:
         mod.codex_plugin_list = lambda: fake_marketplace(SPEC + "  installed, enabled  v  C:\\x")
         ck("Codex 说装了 → install_into_codex(check) 为 True",
            mod.install_into_codex(True) is True)
@@ -140,7 +152,8 @@ def main() -> int:
     if not listing:
         ck.skip("真机 `--check` 一致性", "问不到 codex（PATH 里没有？）")
     else:
-        ck("真机清单认得出来（installed / missing）", state in ("installed", "missing"),
+        ck("真机清单认得出来（installed / missing / disabled）",
+           state in ("installed", "missing", "disabled"),
            "得到 %r" % state)
 
         before = {}
