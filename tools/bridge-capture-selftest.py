@@ -57,6 +57,7 @@ def _engine(tmp: str, routes=None, capture_dir=None):
         capture_prefixes=["记一下"],
         capture_routes=routes or {},
         capture_keywords={},
+        hud_enabled=False,
     )
     pill._capture_index_dir = lambda: os.path.join(tmp, "index")
     return pill
@@ -179,6 +180,109 @@ def check_failed_write_releases(ck, tmp) -> None:
     ck("重投落出来的不是「重复」", got.get("duplicate") is False, repr(got))
 
 
+def _md(where: str):
+    return sorted(f for f in os.listdir(where) if f.endswith(".md")) \
+        if os.path.isdir(where) else []
+
+
+def check_residue_keeps_claim(ck, tmp) -> None:
+    """落盘失败**但留下残件**时，认领不能放 —— 放了重投就写出第二篇
+
+    这是复核 ② 号发现的那条路：`write()` 清理失败时曾把 `os.remove` 的异常
+    吞掉，调用方以为「没留残件」，于是 release 掉认领，重投再落一篇，
+    同一个 text_id 两篇（Codex 用 `.scratch/repro_release_residue.py` 复现过）。
+    """
+    import capture as capture_mod
+    where = os.path.join(tmp, "residue-inbox")
+    pill = _engine(tmp, capture_dir=where)
+    real = capture_mod.write
+
+    def boom_with_residue(inbox_dir, *_a, **_k):
+        os.makedirs(inbox_dir, exist_ok=True)
+        residue = os.path.join(inbox_dir, "2026-10-05-011211.md")
+        with open(residue, "w", encoding="utf-8") as fh:
+            fh.write("半截的")
+        raise capture_mod.PartialWrite(residue, OSError("写失败（自测造的）"),
+                                       PermissionError("删不掉（自测造的）"))
+
+    capture_mod.write = boom_with_residue
+    try:
+        pill._bridge_command("capture", {"text": "第一篇", "text_id": "r-1"})
+        ck("残件那条路要抛出去", False, "没有抛异常")
+    except capture_mod.PartialWrite:
+        ck("残件那条路要抛出去", True)
+    except Exception as exc:                          # noqa: BLE001
+        ck("残件那条路要抛出去", False, repr(exc))
+    finally:
+        capture_mod.write = real
+
+    try:
+        pill._bridge_command("capture", {"text": "重投的这一篇", "text_id": "r-1"})
+        ck("有残件时重投报 IncompleteCapture（不是 duplicate）", False,
+           "没有抛异常")
+    except capture_mod.IncompleteCapture as exc:
+        ck("有残件时重投报 IncompleteCapture（不是 duplicate）", True)
+        ck("异常里带索引文件路径（看一眼去哪儿看）",
+           os.path.join(tmp, "index") in str(exc), repr(str(exc)))
+    except Exception as exc:                          # noqa: BLE001
+        ck("有残件时重投报 IncompleteCapture（不是 duplicate）", False, repr(exc))
+
+    notes = _md(where)
+    ck("捕获区仍然只有残件那一篇（没写出第二篇）", len(notes) == 1, repr(notes))
+
+
+def check_failed_write_releases_e2e(ck, tmp) -> None:
+    """没有残件时不变量照旧：放掉认领，重投能落下去"""
+    import capture as capture_mod
+    real = capture_mod.compose
+    where = os.path.join(tmp, "nofile-inbox")
+    pill = _engine(tmp, capture_dir=where)
+
+    # 用「编码失败」造一次真失败：write 自己会走到清理那一步，且能清干净。
+    capture_mod.compose = lambda body, now, route_meta=None: "\ud800"
+    try:
+        pill._bridge_command("capture", {"text": "会失败的这一篇", "text_id": "n-1"})
+        ck("无残件的失败要抛", False, "没有抛异常")
+    except UnicodeEncodeError:
+        ck("无残件的失败要抛", True)
+    except Exception as exc:                          # noqa: BLE001
+        ck("无残件的失败要抛", False, repr(exc))
+    finally:
+        capture_mod.compose = real
+
+    ck("走到过清理这一步、且清干净了（目录是空的）", _md(where) == [], repr(_md(where)))
+    got = pill._bridge_command("capture", {"text": "重投的这一篇", "text_id": "n-1"})
+    ck("放掉认领之后重投能落下去", got.get("accepted") is True, repr(got))
+    ck("重投落出来的不是「重复」", got.get("duplicate") is False, repr(got))
+
+
+def check_spoken_outcome_three_way(ck, tmp) -> None:
+    """口述那条路必须给三态 —— 空正文不许顺道把口令粘出去
+
+    旧写法返回布尔，`False` 同时表示「落失败，改走粘贴」和「没内容」，
+    调用方分不开：口令「记一下」被当成普通文本粘进前台窗口（复核 ③ 号）。
+    """
+    import capture as capture_mod
+    where = os.path.join(tmp, "spoken-inbox")
+    pill = _engine(tmp, capture_dir=where)
+
+    ck("正常正文 → done", pill._capture("买牛奶") == "done")
+    ck("落了一篇", len(_md(where)) == 1, repr(_md(where)))
+
+    before = len(_md(where))
+    ck("只有空白 → empty", pill._capture("   ") == "empty")
+    ck("empty 不落空笔记", len(_md(where)) == before, repr(_md(where)))
+
+    real = capture_mod.write
+    capture_mod.write = lambda *_a, **_k: (_ for _ in ()).throw(
+        OSError("盘满了（自测造的）"))
+    try:
+        got = pill._capture("会失败的这一篇")
+    finally:
+        capture_mod.write = real
+    ck("落盘失败 → failed（调用方据此退回粘贴，字不丢）", got == "failed", repr(got))
+
+
 def main() -> int:
     ck = Checker()
     tmp = tempfile.mkdtemp(prefix="vp-capture-verb-")
@@ -186,7 +290,10 @@ def main() -> int:
         print("=== 控制面 capture 动词自测 ===")
         for fn, args in ((check_in_commands, ()), (check_dispatch, (tmp,)),
                          (check_idempotent, (tmp,)), (check_bad_input, (tmp,)),
-                         (check_failed_write_releases, (tmp,))):
+                         (check_failed_write_releases, (tmp,)),
+                         (check_failed_write_releases_e2e, (tmp,)),
+                         (check_residue_keeps_claim, (tmp,)),
+                         (check_spoken_outcome_three_way, (tmp,))):
             print("\n[%s]" % fn.__doc__.strip().splitlines()[0])
             fn(ck, *args)
     finally:

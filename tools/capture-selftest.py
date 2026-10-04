@@ -115,6 +115,26 @@ def check_write(ck, tmp) -> None:
         ck("空目录要报错", True)
 
 
+class _NoRemove:
+    """把 `os` 换成「某个目录下的 remove 一律失败」的替身，其余全转发。
+
+    模拟同步盘 / 杀软占着文件：写失败之后的清理也失败。用替身而不是直接改
+    `os.remove`，免得把整个进程的 `os` 也一起改了。
+    """
+
+    def __init__(self, real, prefix: str) -> None:
+        self._real = real
+        self._prefix = os.path.abspath(prefix) + os.sep
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+    def remove(self, path, *a, **k):
+        if os.path.abspath(str(path)).startswith(self._prefix):
+            raise PermissionError(13, "锁着删不掉（自测造的）")
+        return self._real.remove(path, *a, **k)
+
+
 def check_write_cleanup(ck, tmp) -> None:
     """写坏了不留残件"""
     where = os.path.join(tmp, "cleanup")
@@ -132,6 +152,30 @@ def check_write_cleanup(ck, tmp) -> None:
         capture.compose = real
     ck("失败后目标目录是空的", os.path.isdir(where) and os.listdir(where) == [],
        repr(os.listdir(where) if os.path.isdir(where) else None))
+
+    # 清理也失败：半篇真的留在了盘上。write 必须**说出来**（PartialWrite，带
+    # 残件路径），不能吞掉 —— 调用方正是靠「有没有残件」决定认领放不放
+    # （见 capture.PartialWrite）。吞掉就会放掉认领，重投写出第二篇。
+    residue = os.path.join(tmp, "cleanup-residue")
+    real_os = os
+    capture.compose = lambda body, now, route_meta=None: "\ud800"
+    capture.os = _NoRemove(real_os, residue)
+    try:
+        capture.write(residue, "x", datetime(2026, 10, 3, 15, 42, 33))
+        ck("残件删不掉时要抛 PartialWrite", False, "没有抛异常")
+    except capture.PartialWrite as exc:
+        ck("残件删不掉时要抛 PartialWrite", True)
+        ck("PartialWrite 带上残件路径", os.path.abspath(exc.path).startswith(
+            os.path.abspath(residue) + os.sep), repr(getattr(exc, "path", None)))
+        ck("残件真的还在盘上（这就是放行第二篇的那条路）",
+           os.path.isfile(exc.path), repr(os.listdir(residue)))
+        ck("PartialWrite 仍是 OSError（老调用方照旧接得住）",
+           isinstance(exc, OSError), repr(type(exc).__mro__))
+    except Exception as exc:                          # noqa: BLE001
+        ck("残件删不掉时要抛 PartialWrite", False, repr(exc))
+    finally:
+        capture.compose = real
+        capture.os = real_os
 
 
 def check_index(ck, tmp) -> None:

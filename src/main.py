@@ -414,17 +414,22 @@ class VoicePill:
             with self._lock:
                 armed = self._capture_armed
                 self._capture_armed = False
-        captured = False
+        outcome = ""                    # "" / done / empty / failed
         if text and self.settings.capture_enabled and self.settings.capture_dir:
             hit, body = capture.decide(text, self.settings.capture_prefixes, armed)
             if hit:
-                captured = self._capture(body)
+                outcome = self._capture(body)
         elif armed:
             print("[落库标记] 但落库没开：配 capture_dir 才生效（这次按普通粘贴）",
                   file=sys.stderr)
 
-        if captured:
+        if outcome == "done":
             pass                        # 已落库：不粘贴、也不打印
+        elif outcome == "empty":
+            # 口述里只有口令、没有正文：落库没内容可落，粘贴又只会把口令本身
+            # 打进前台窗口。两件事都不做，只在日志里留一行 —— 用户看得见安静，
+            # 不需要一次假粘贴（HUD 那边已经提示过了）。
+            print("[落库为空] 没落库、也不粘贴（口述里只有口令）：%s" % text)
         elif self.settings.auto_paste and text:
             try:
                 paste_mod.paste(text, self._target_hwnd)
@@ -509,10 +514,15 @@ class VoicePill:
             claimed = True
         try:
             path = capture.write(dest, body, route_meta=(dest, reason))
-        except BaseException:
+        except BaseException as exc:
             # 没落成 → 把认领放掉，让重投还能落。不放的话这个 text_id 就
             # 废了，而文字是真丢了（write 要么落成、要么什么都没留）。
-            if claimed:
+            #
+            # 唯一不放的情形：write 留下了残件（PartialWrite）。那时盘上已经
+            # 有一篇、可能是半截的，放掉认领 = 允许重投再写一篇，同一个
+            # text_id 落下两篇 —— 幂等正是要防这个。认领留着，重投时报
+            # IncompleteCapture，让人先去看一眼（异常里带着索引路径和出口）。
+            if claimed and not isinstance(exc, capture.PartialWrite):
                 capture.release(index_dir, text_id)
             raise
         if claimed:
@@ -523,10 +533,19 @@ class VoicePill:
                 "reason": reason, "path": path, "text_id": text_id or "",
                 "duplicate": False, "skipped": None}
 
-    def _capture(self, body: str) -> bool:
-        """把这次口述落进 Inbox。成功 True；失败 False，且**绝不抛** ——
-        调用方接着要走交付收尾（删 WAV、复位状态），不能在这里中断。
-        失败时调用方会退回普通粘贴，所以字不会丢。
+    def _capture(self, body: str) -> str:
+        """把这次口述落进 Inbox。返回三态之一，且**绝不抛** —— 调用方接着要
+        走交付收尾（删 WAV、复位状态），不能在这里中断。
+
+        - `"done"`：落成了。
+        - `"empty"`：口述里只有口令、没有正文。既不落空笔记，**也不粘贴**
+          —— 粘出去的是口令本身（「记一下」四个字被打进前台窗口）。
+        - `"failed"`：落库失败。字没丢：调用方退回普通粘贴。
+
+        为什么不是一个布尔：`False` 只能表达「没落库」，而「没落库」有两个
+        意思 —— 「落失败了，改走粘贴别把字丢了」和「本来就没内容，粘什么都
+        不该粘」。一个返回值扛两个意思，调用方分不开，空口述就会顺着失败
+        那条路把口令粘出去。
         """
         try:
             # 口述这条路没有 text_id：它的幂等靠「标记只对下一次口述有效」
@@ -539,17 +558,22 @@ class VoicePill:
             if self.settings.hud_enabled:
                 self.hud.set_text("落库失败，已改粘贴")
                 threading.Timer(2.5, self.hud.hide).start()
-            return False
+            return "failed"
         if not result.get("accepted"):
-            # 没落成（空正文）：退回普通粘贴，别把这次口述吞掉。
+            # 今天 `accepted: false` 只有一种来源：空正文（契约 §3 坏输入表）。
+            # 「保鲜期已过」也回 false，但它只在跨机的 spool 那条路上出现，
+            # 口述是本机直落、碰不到。
             print("[落库跳过] %s" % result.get("skipped"), file=sys.stderr)
-            return False
+            if self.settings.hud_enabled:
+                self.hud.set_text("口述为空，没落库")
+                threading.Timer(2.5, self.hud.hide).start()
+            return "empty"
         path = result.get("path", "")
         print("[已落 %s] %s" % (result.get("dest") or "Inbox", path))
         if self.settings.hud_enabled:
             self.hud.set_text("已落 %s" % (result.get("dest") or "Inbox"))
             threading.Timer(2.5, self.hud.hide).start()
-        return True
+        return "done"
 
     # ---------- 字幕条（HUD）提示 ----------
 

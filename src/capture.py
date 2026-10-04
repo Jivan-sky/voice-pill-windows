@@ -125,12 +125,36 @@ def compose(body: str, now: datetime,
     return ''.join(lines)
 
 
+class PartialWrite(OSError):
+    """写坏了、而且**没删掉**：`path` 那个文件还在盘上。
+
+    `write()` 的承诺是「要么落成、要么什么都不留」。这条异常就是那句承诺
+    **已经破了**的证据——写失败之后连清理也失败（同步盘 / 杀软占着文件），
+    半篇留在了捕获区里。
+
+    为什么值得单开一个类、而不是让它混在普通 `OSError` 里：调用方要按它
+    分支。落盘失败 + **没**残件 → 放掉认领，让重投再落；落盘失败 + **有**
+    残件 → 认领不能放，放了重投就会写出第二篇（同一个 `text_id` 落下两篇，
+    正是幂等要防的）。带上路径是为了让人能直接去删。
+    """
+
+    def __init__(self, path: str, write_error: BaseException,
+                 cleanup_error: BaseException) -> None:
+        super().__init__(
+            "落盘失败，而且残件没删掉（%s）。写失败：%r；清理失败：%r"
+            % (path, write_error, cleanup_error))
+        self.path = path
+        self.write_error = write_error
+        self.cleanup_error = cleanup_error
+
+
 def write(inbox_dir: str, body: str, now: Optional[datetime] = None,
           route_meta: Optional[Tuple[str, str]] = None) -> str:
     """把一次捕获原子地写进 `inbox_dir`，返回落盘路径。
 
     用 `O_CREAT|O_EXCL` 创建，**绝不覆盖已有文件**：同一秒的第二次捕获自动
-    退到 `-2`、`-3`……。写坏的文件会被删掉，不留半个残件。
+    退到 `-2`、`-3`……。写坏的文件会被删掉，不留半个残件——**删不掉时抛
+    `PartialWrite`**，不装作清理成功了（见那个类的说明）。
 
     `route_meta` 原样转给 `compose`（见那里的说明）；不给就是今天的行为。
     """
@@ -150,11 +174,14 @@ def write(inbox_dir: str, body: str, now: Optional[datetime] = None,
         try:
             with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
                 fh.write(content)
-        except Exception:
+        except Exception as exc:
             try:
                 os.remove(path)
-            except OSError:
-                pass
+            except OSError as cleanup_exc:
+                # 清理也失败：盘上真的留了半篇。不能吞——调用方正是靠
+                # 「write 要么落成、要么什么都没留」来决定认领放不放，
+                # 吞掉它就会放掉认领、让重投再写一篇（同一个 text_id 两篇）。
+                raise PartialWrite(path, exc, cleanup_exc) from exc
             raise
         return path
     raise OSError("同一秒里同名文件太多，放弃：%s" % stem)
@@ -171,9 +198,13 @@ def _unlink(path: str) -> None:
 class IncompleteCapture(Exception):
     """同一个 `text_id` 上一次**认领了、但没落完**。
 
-    唯一到得了这里的情形是进程死在「认领」与「落盘」之间。这时落没落下去
-    我们不知道——所以不猜：既不当成重复（会吞掉真该落的字），也不重写
-    （会写出第二篇）。报出来，让人看一眼。
+    到得了这里的情形有两个：进程死在「认领」与「落盘」之间；或者落盘失败
+    但残件没删掉（`PartialWrite`），那时认领**故意不放**——放掉重投就会写出
+    第二篇。落没落下去我们不知道——所以不猜：既不当成重复（会吞掉真该落的
+    字），也不重写（会写出第二篇）。报出来，让人看一眼。
+
+    异常文本里带两样东西：索引文件路径，以及**看一眼之后做什么**。只报
+    「没落完」而不给出口，等于把人晾在这儿。
     """
 
 
@@ -227,7 +258,11 @@ def claim(index_dir: str, text_id: str) -> Optional[Dict]:
     except FileExistsError:
         record = _read_claimed(path)
         if record.get("state") != "done":
-            raise IncompleteCapture("text_id 已认领但没落完：%s" % text_id)
+            raise IncompleteCapture(
+                "text_id 已认领但没落完：%s\n"
+                "       看一眼索引：%s\n"
+                "       去捕获区按时间戳对着看一眼那篇该不该在；确认完删掉这个"
+                "索引文件，就能重投" % (text_id, path))
         return record
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
