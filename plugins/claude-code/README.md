@@ -47,6 +47,36 @@ reach a shell parser."*）。所以这里直接用 `${CLAUDE_PLUGIN_ROOT}`，不
 [`.claude-plugin/marketplace.json`](../../.claude-plugin/marketplace.json)
 把一个插件（`source: ./plugins/claude-code`）登在市场里。
 
+## 装：跑脚本，别手敲命令
+
+```powershell
+.venv\Scripts\python.exe plugins\claude-code\install.py --check   # 只看现状，什么都不动
+.venv\Scripts\python.exe plugins\claude-code\install.py           # 缺什么补什么，可反复跑
+```
+
+上面那「两步」也是脚本做的（`bin\voicepill.exe` 拷进来、`persona.md` 渲染副本），
+落盘前先 `git check-ignore` 确认被忽略——仓库里不会多出产物。
+装完要**新开一个 CC 会话**才会拾取钩子、技能与 MCP 工具。
+
+判「装没装上」只问 CC 自己（`claude plugin list --json`），并且要求状态里有
+`enabled: true`：**装上和生效是两回事**，钩子只在启用时才跑。2026-10-04 Codex 侧
+栽过一次「文件一个不缺、`--check` 报就绪、钩子一条没跑」，这里不留那半扇门。
+
+### 入参必须自己加引号（踩过的坑）
+
+`claude` 在 Windows 上是 npm 装的，实际是 `claude.CMD`——**批处理只能由 cmd.exe 跑**，
+而 cmd.exe 会把**没加引号的 `&`** 当命令分隔符。本仓库路径就叫 `Own_tools&skills`，
+所以
+
+```python
+subprocess.run([claude, "plugin", "marketplace", "add", str(REPO_ROOT), "--json"])
+```
+
+会被劈成两半，实测报 `Path does not exist: D:\Own_tools`——命令"跑成功了"，
+只是跑的是另一个路径。**这跟上一节钩子那条是同一个坑，但钩子那条路上不存在**
+（钩子是直接 spawn、不过 shell），只有安装这一次调用会撞上。脚本里每个 token
+都自己加引号再交给 `cmd.exe /c`，见 `install.py` 的 `_run_claude()`。
+
 ## 验收（端到端两条，来自契约 §5）
 
 1. **只改宿主侧配置**，CC 就能「说一句 → 文字进本轮上下文」；
@@ -54,5 +84,10 @@ reach a shell parser."*）。所以这里直接用 `${CLAUDE_PLUGIN_ROOT}`，不
 
 ## 状态
 
-**未装、未跑过**。本目录目前是接线文件本身；上面两条验收还没做，
-`voicepill.exe` 也还没放进本目录。**不要在没跑过验收的情况下说它已经能用。**
+**未装、未跑过验收。** 已就位的是：接线文件（`plugin.json` / `.mcp.json` /
+`skills/`，两张清单 `claude plugin validate --strict` 无错）与安装脚本
+`install.py`（`--check` 只读、可反复跑）。
+
+**没跑过的**：`install.py` 的安装动作本身（`marketplace add` / `plugin install`
++ 宿主那一份产物点名）——那一步会真的动本机**全局** CC 配置，要人点头才跑。
+所以上面两条端到端验收也还没做。**不要在没跑过验收的情况下说它已经能用。**
