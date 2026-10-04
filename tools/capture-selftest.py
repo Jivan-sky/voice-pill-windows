@@ -119,7 +119,8 @@ def check_write_cleanup(ck, tmp) -> None:
     """写坏了不留残件"""
     where = os.path.join(tmp, "cleanup")
     real = capture.compose
-    capture.compose = lambda body, now: "\ud800"      # 故意给个编不成 UTF-8 的
+    # 替身要跟上 compose 的签名（第三个参数是落点/理由，见 capture.route）。
+    capture.compose = lambda body, now, route_meta=None: "\ud800"   # 故意给个编不成 UTF-8 的
     try:
         capture.write(where, "x", datetime(2026, 10, 3, 15, 42, 33))
         ck("编码失败要抛", False, "没有抛异常")
