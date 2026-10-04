@@ -1,0 +1,51 @@
+{
+  "name": "voice-pill",
+  "version": "0.1.0",
+  "description": "Voice Pill: press Fn to dictate; Claude Code reads what you said, and can speak back.",
+  "author": {
+    "name": "Jivan"
+  },
+  "license": "MIT",
+  "keywords": [
+    "voice",
+    "dictation",
+    "speech",
+    "asr",
+    "tts"
+  ],
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/voicepill.exe\" session-start",
+            "timeout": 20
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/voicepill.exe\" prompt-submit",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/voicepill.exe\" stop",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

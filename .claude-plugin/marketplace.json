@@ -1,0 +1,19 @@
+{
+  "name": "voice-pill",
+  "owner": {
+    "name": "Jivan"
+  },
+  "metadata": {
+    "description": "Voice Pill 的 Claude Code 插件：按 Fn 说话，文字进本轮上下文；要它念就念。",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "voice-pill",
+      "source": "./plugins/claude-code",
+      "description": "把本机 Voice Pill 引擎接给 Claude Code：Fn 说话 → 转写进本轮上下文；需要时让本机念出来。转写在本机完成，音频不出机器。",
+      "category": "productivity",
+      "tags": ["voice", "dictation", "asr", "tts", "hooks"]
+    }
+  ]
+}

@@ -20,3 +20,7 @@ Desktop.ini
 plugins/voice-pill/.mcp.json
 plugins/voice-pill/hooks/hooks.json
 plugins/voice-pill/voicepill.exe
+# Claude Code 侧同理：exe 是构建产物，persona.md 是从 plugins/voice-pill 渲染过来的
+# 副本（人设的源只有那一份，见 ANC 的「双源手抄」那条）。
+plugins/claude-code/voicepill.exe
+plugins/claude-code/persona.md

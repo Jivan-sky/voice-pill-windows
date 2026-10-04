@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "voice_pill": {
+      "type": "stdio",
+      "command": "${CLAUDE_PLUGIN_ROOT}/voicepill.exe",
+      "args": []
+    }
+  }
+}
