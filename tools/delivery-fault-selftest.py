@@ -15,6 +15,10 @@
 不碰麦克风、不装热键钩子、不开控制面管道、不显示 HUD：
 只构造 VoicePill 对象，然后手工摆状态、注入故障。
 
+还有一条走的是同一套真状态机：**口令那一路**（落库 / 退回粘贴 / 待取队列
+三处交付的是什么）。它在 `_capture` 那一层量不到——「只说口令」这句话连
+`decide` 都不命中，根本走不到 `_capture`——只能从真 `on_complete` 打。
+
 用法：
     .venv\\Scripts\\python.exe tools\\delivery-fault-selftest.py
 """
@@ -22,6 +26,7 @@ from __future__ import annotations
 
 import io
 import os
+import shutil
 import sys
 import tempfile
 import threading
@@ -33,6 +38,7 @@ import console                     # noqa: E402
 
 console.make_output_safe()
 
+import capture as capture_mod      # noqa: E402
 import config                      # noqa: E402
 import main as app_main            # noqa: E402
 import paste as paste_mod          # noqa: E402
@@ -67,6 +73,19 @@ def make_pill() -> "app_main.VoicePill":
 def enter_transcribing(pill) -> None:
     with pill._lock:
         pill._set_phase(app_main.Phase.TRANSCRIBING)
+
+
+def _md(where: str) -> list:
+    """捕获区里的 .md（排序）。目录还不存在就是空表。"""
+    try:
+        return sorted(f for f in os.listdir(where) if f.endswith(".md"))
+    except OSError:
+        return []
+
+
+def _read(path: str) -> str:
+    with open(path, "r", encoding="utf-8") as fh:
+        return fh.read()
 
 
 def check_timeout_is_upstream_value(ck: Checker) -> None:
@@ -186,13 +205,107 @@ def check_normal_delivery_is_untouched(ck: Checker) -> None:
         paste_mod.paste = real_paste
 
 
+def check_command_word_never_reaches_paste_or_queue(ck: Checker) -> None:
+    """口令是触发词、不是内容：落库、退回粘贴、待取队列三处都只交付正文。
+
+    旧写法把**原话**入队、也把原话退回粘贴，「记一下」四个字会跟着内容一起
+    进对话——而队列正是被 UserPromptSubmit 钩子注入进对话的。
+
+    「只说口令」这一条在 `_capture` 那一层量不到：`capture.decide("记一下", …)`
+    先就不命中（不命中 → 不调用 `_capture`），拿 `_capture("   ")` 当替身量的是
+    生产里到不了的输入。所以要这条线有尺子，只能从真 `on_complete` 打。
+    """
+    tmp = tempfile.mkdtemp(prefix="vp-capture-branch-")
+    where = os.path.join(tmp, "inbox")
+    pill = make_pill()
+    pill.settings.capture_enabled = True
+    pill.settings.capture_dir = where
+    pill._capture_index_dir = lambda: os.path.join(tmp, "index")
+
+    pasted = []
+    real_paste = paste_mod.paste
+    paste_mod.paste = lambda text, hwnd: pasted.append(text)
+
+    buf = io.StringIO()
+    real_stderr, sys.stderr = sys.stderr, buf
+    try:
+        # 正面对照先跑：没有口令的普通话照旧粘贴。尺子得先证明自己打得到
+        # 粘贴这条路，否则下面那些「没粘贴」全都会因为它自己坏了而变绿。
+        enter_transcribing(pill)
+        pill.on_complete("买冷奶", None)
+        ck("普通说话照旧粘贴", pasted == ["买冷奶"], repr(pasted))
+
+        # 只说口令：没内容可落、口令又不该被粘出去，队列里也不该留一个字。
+        enter_transcribing(pill)
+        pill.on_complete("记一下", None)
+        ck("只说口令时一次都没粘贴", pasted == ["买冷奶"], repr(pasted))
+        ck("只说口令不落空笔记", _md(where) == [], repr(_md(where)))
+        ck("只说口令不进待取队列", pill._pending_count() == 1,
+           "实际 %d 条" % pill._pending_count())
+
+        # 口令 + 正文：落一篇，不粘贴，队列里放正文。
+        enter_transcribing(pill)
+        pill.on_complete("记一下 买牛奶", None)
+        ck("口令 + 正文不粘贴", pasted == ["买冷奶"], repr(pasted))
+        notes = _md(where)
+        ck("口令 + 正文落了一篇", len(notes) == 1, repr(notes))
+        if notes:
+            written = _read(os.path.join(where, notes[0]))
+            ck("落进去的是正文、不含口令",
+               "买牛奶" in written and "记一下" not in written,
+               repr(written[:200]))
+        texts, _seq = pill._drain_pending()
+        ck("队列里放的是正文、不含口令",
+           texts == ["买冷奶", "买牛奶"], repr(texts))
+
+        # 落库失败退回粘贴：粘的也必须是正文，不然队列与粘贴两处走散。
+        real_write = capture_mod.write
+        capture_mod.write = lambda *_a, **_k: (_ for _ in ()).throw(
+            OSError("盘满了（自测造的）"))
+        try:
+            del pasted[:]
+            enter_transcribing(pill)
+            pill.on_complete("记一下 买酱油", None)
+        finally:
+            capture_mod.write = real_write
+        ck("落库失败退回粘贴时粘的是正文", pasted == ["买酱油"], repr(pasted))
+        ck("落库失败仍把正文留在队列里", pill._pending_count() == 1,
+           "实际 %d 条" % pill._pending_count())
+        text = buf.getvalue()
+        ck("退回粘贴在日志里说明了原因", "[落库失败]" in text)
+
+        # 口令表里混进非字符串：`settings.json` 存得下（config 只校验了它是不是
+        # list），`decide` 会抛。判定排在入队之前，抛出去就等于这句话连队列都进
+        # 不去——尺子钉的是「判不出来也得把话交出去」。
+        bad = make_pill()
+        bad.settings.capture_enabled = True
+        bad.settings.capture_dir = where
+        bad.settings.capture_prefixes = [123]
+        bad._capture_index_dir = lambda: os.path.join(tmp, "index")
+        del pasted[:]
+        enter_transcribing(bad)
+        bad.on_complete("记一下 买醋", None)
+        ck("口令表坏了也不把话丢掉（照原话交付）",
+           pasted == ["记一下 买醋"], repr(pasted))
+        ck("口令表坏了话仍进队列", bad._pending_count() == 1,
+           "实际 %d 条" % bad._pending_count())
+        ck("口令表坏了在日志里留痕", "[落库判定失败]" in buf.getvalue())
+        ck("口令表坏了状态照样回到 IDLE",
+           bad.phase is app_main.Phase.IDLE, "实际 %s" % bad.phase)
+    finally:
+        sys.stderr = real_stderr
+        paste_mod.paste = real_paste
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def main() -> int:
     ck = Checker()
     print("=== 交付护栏故障注入自测（真状态机）===")
     for fn in (check_timeout_is_upstream_value,
                check_stuck_paste_unlocks_and_spares_new_session,
                check_unexpected_paste_exception_still_unlocks,
-               check_normal_delivery_is_untouched):
+               check_normal_delivery_is_untouched,
+               check_command_word_never_reaches_paste_or_queue):
         print("\n[%s]" % fn.__doc__.strip().splitlines()[0])
         fn(ck)
     print("\n%s（%d 项失败）" % ("✅ 全部通过" if not ck.failed else "❌ 有失败",

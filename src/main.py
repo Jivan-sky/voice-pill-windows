@@ -402,11 +402,6 @@ class VoicePill:
             return
 
         text = text or ""
-        if text:
-            # 先入待取队列：这是用户真说过的话。哪怕这次交付后来被判成迟到，
-            # 也宁可让它在队列里等一次取用，而不是悄悄丢掉。
-            with self._lock:
-                self._pending.append((time.time(), text))
         # 标记只对「下一次口述」有效：一有正文就消费掉，不管这次是否真落库
         # （否则它会在内存里一直亮着，下一次说话莫名进 Inbox）。
         armed = False
@@ -414,14 +409,36 @@ class VoicePill:
             with self._lock:
                 armed = self._capture_armed
                 self._capture_armed = False
-        outcome = ""                    # "" / done / empty / failed
+        # 这次交付的**正文**：命中口令时是剥掉口令的那部分。口令是触发词、
+        # 不是内容 —— 入队和「落库失败退回粘贴」都只交付正文。否则口令会
+        # 连内容一起进对话，正是 spec 给「不粘贴」写的那条理由；而队列正是
+        # 被 UserPromptSubmit 钩子注入对话的，同一条理由对它一样成立。
+        hit = False
+        body = text
         if text and self.settings.capture_enabled and self.settings.capture_dir:
-            hit, body = capture.decide(text, self.settings.capture_prefixes, armed)
-            if hit:
-                outcome = self._capture(body)
+            # 口令表来自用户可编辑的 settings.json，而 `config` 只校验了它「是不是
+            # list」、没校验元素（`capture_prefixes: ["记一下", 123]` 是存得下的），
+            # 所以这里会抛。判不出来就按「不命中」退回普通交付——入队在这之后，
+            # 抛出去就等于用户这句话连队列都进不去，与「宁可等一次取用也不悄悄丢掉」
+            # 正好相反。
+            try:
+                hit, stripped = capture.decide(text, self.settings.capture_prefixes, armed)
+            except Exception as exc:   # noqa: BLE001
+                print("[落库判定失败] %r\n       按普通说话处理，文字不丢" % (exc,),
+                      file=sys.stderr)
+            else:
+                if hit:
+                    body = stripped
         elif armed:
             print("[落库标记] 但落库没开：配 capture_dir 才生效（这次按普通粘贴）",
                   file=sys.stderr)
+        # 入待取队列：这是用户真说过的话。哪怕这次交付后来被判成迟到，也宁可
+        # 让它在队列里等一次取用，而不是悄悄丢掉。放正文而不是原话：只有口令
+        # 那一句没有内容，空串进队列只会让 `take` 取回一次空文本。
+        if body:
+            with self._lock:
+                self._pending.append((time.time(), body))
+        outcome = self._capture(body) if hit else ""
 
         if outcome == "done":
             pass                        # 已落库：不粘贴、也不打印
@@ -430,22 +447,22 @@ class VoicePill:
             # 打进前台窗口。两件事都不做，只在日志里留一行 —— 用户看得见安静，
             # 不需要一次假粘贴（HUD 那边已经提示过了）。
             print("[落库为空] 没落库、也不粘贴（口述里只有口令）：%s" % text)
-        elif self.settings.auto_paste and text:
+        elif self.settings.auto_paste and body:
             try:
-                paste_mod.paste(text, self._target_hwnd)
+                paste_mod.paste(body, self._target_hwnd)
             except paste_mod.PasteError as exc:
                 # 粘贴失败**不还原剪贴板**——文字还在，用户可手动 Ctrl+V
                 print("[粘贴失败] %s\n       文字已在剪贴板：%s"
-                      % (exc, text), file=sys.stderr)
+                      % (exc, body), file=sys.stderr)
             except Exception as exc:   # noqa: BLE001
                 # 上游 0.2.3 的坑正在这里：只捕自家异常，别的一律穿透出去，
                 # 状态留在"忙"上，Fn 被自己锁死，还不报错。文字既然已经进
                 # 了剪贴板，就按"粘贴失败"处理，但把原始异常完整记进日志。
                 traceback.print_exc()
                 print("[粘贴失败] 非预期异常 %r\n       文字已在剪贴板：%s"
-                      % (exc, text), file=sys.stderr)
+                      % (exc, body), file=sys.stderr)
         else:
-            print(text)
+            print(body)
 
         # 看门狗可能已经把这次交付作废，而用户也许已经在录下一句了：此时
         # 这些破坏性收尾（删 WAV、复位状态）会打到新会话头上。先自查代际。
