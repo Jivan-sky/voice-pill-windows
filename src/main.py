@@ -177,6 +177,13 @@ class VoicePill:
         # _drain_pending）。只在内存里，进程一退就没了——说过的话不该在
         # 磁盘上多留一份。
         self._pending = collections.deque(maxlen=PENDING_TRANSCRIPTS)
+        # `take` 回执里的序号（契约 §1）。**按条数递增、不按调用次数**：
+        # 只有按条数跳号，宿主才能从 `seq - count - 上次的 seq` 算出「你错过了
+        # 几条」。同一次取走的 `texts` 拿到的就是紧邻的这一段号。
+        # 和队列一样只在内存里：进程一退，队列本来就是空的，没有任何一条
+        # 「被取走过」需要跨重启记账。宿主那侧看到序号回落应当按重启处理
+        # （回落本身不构成跳号），这一条写在契约 §1 里。
+        self._taken_seq = 0
         self._started_at = time.time()
         # 退出信号。见 _shutdown 的注释：不能再用 sys.exit()。
         self._stop = threading.Event()
@@ -605,8 +612,8 @@ class VoicePill:
         if cmd == "status":
             return self._bridge_status()
         if cmd == "take":
-            texts = self._drain_pending()
-            return {"texts": texts, "count": len(texts)}
+            texts, seq = self._drain_pending()
+            return {"texts": texts, "count": len(texts), "seq": seq}
         if cmd == "speak":
             # auto=True 是"每轮回复自动念"那条路（Stop 钩子），它受
             # settings.speak_replies 管；auto=False 是明确要求念（插件
@@ -640,13 +647,17 @@ class VoicePill:
         """待取文字的保鲜期（秒）。settings 里 0 = 不过期。"""
         return max(0.0, float(self.settings.pending_ttl_minutes)) * 60.0
 
-    def _drain_pending(self) -> list:
-        """取走队列里所有文字（旧→新），顺带丢掉过了保鲜期的。
+    def _drain_pending(self) -> tuple:
+        """取走队列里所有文字（旧→新），返回 (文字, 序号)。
 
         为什么要有保鲜期：队列里的字只在用户下一次往 Codex 发消息时才被
         取走。没有时效的话，几天前随口说的一句会在几天后被一起塞进一轮
         对话，和当时真正的意图搅在一起。取走语义照旧——过期的那些既不
         返回、也不再留在队列里。
+
+        序号按**返回的条数**递增，过期的那些不计——它们谁也没送到，不该
+        占号，否则宿主算出来的「错过几条」会把丢弃也算成一次投递。递增和
+        取空同一把锁：两个宿主同时来问，不能拿到同一个号。
         """
         ttl = self._pending_ttl_seconds()
         cutoff = time.time() - ttl if ttl > 0 else None
@@ -654,8 +665,11 @@ class VoicePill:
         with self._lock:
             items = list(self._pending)
             self._pending.clear()
-        return [text for stamp, text in items
-                if cutoff is None or stamp >= cutoff]
+            texts = [text for stamp, text in items
+                     if cutoff is None or stamp >= cutoff]
+            self._taken_seq += len(texts)
+            seq = self._taken_seq
+        return texts, seq
 
     def _pending_count(self) -> int:
         """还没过保鲜期的条数（`status` 用）。只报数，不动队列。"""
