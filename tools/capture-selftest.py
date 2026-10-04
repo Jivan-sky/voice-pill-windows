@@ -134,13 +134,85 @@ def check_write_cleanup(ck, tmp) -> None:
        repr(os.listdir(where) if os.path.isdir(where) else None))
 
 
+def check_index(ck, tmp) -> None:
+    """text_id 幂等索引：先认领后落盘、重复投递不写第二篇"""
+    idx = os.path.join(tmp, "index")
+    ck("第一次认领拿到权利（返回 None）", capture.claim(idx, "t-1") is None)
+    # 认领了但没落完，必须报出来：既不当重复（会吞掉该落的字），也不重写
+    # （会写出第二篇）。这两条都错得起，所以只能吵。
+    try:
+        capture.claim(idx, "t-1")
+        ck("认领了没落完 → 抛 IncompleteCapture", False, "没有抛异常")
+    except capture.IncompleteCapture:
+        ck("认领了没落完 → 抛 IncompleteCapture", True)
+    except Exception as exc:                          # noqa: BLE001
+        ck("认领了没落完 → 抛 IncompleteCapture", False, repr(exc))
+
+    # done 之后才是幂等命中，且要指回第一次那一篇
+    capture.commit(idx, "t-1", {"path": r"D:\x\2026-10-05-101010.md",
+                                "dest": "00_Inbox", "reason": "无口令命中，落默认捕获区"})
+    rec = capture.claim(idx, "t-1")
+    ck("落完之后才认成重复", (rec or {}).get("state") == "done", repr(rec))
+    ck("重复记录指回第一次那一篇",
+       (rec or {}).get("path") == r"D:\x\2026-10-05-101010.md", repr(rec))
+
+    # 兼容性：commit 覆盖掉 pending，读回来的是 done 且字段齐
+    ck("commit 后 dest/reason 也存下来了",
+       (rec or {}).get("dest") == "00_Inbox" and "默认捕获区" in (rec or {}).get("reason", ""),
+       repr(rec))
+
+    # release：只放 pending 的
+    capture.claim(idx, "t-2")
+    capture.release(idx, "t-2")
+    ck("落盘失败后能重新认领", capture.claim(idx, "t-2") is None)
+    capture.commit(idx, "t-3", {"path": "p"})
+    capture.release(idx, "t-3")
+    ck("已 done 的不被 release 抹掉", (capture.claim(idx, "t-3") or {}).get("path") == "p")
+
+    # 认领文件坏了：不许猜，当没落完
+    bad = os.path.join(idx, "%s.json" % capture._text_id_key("t-4"))
+    with open(bad, "w", encoding="utf-8") as fh:
+        fh.write("{ 这不是 JSON")
+    try:
+        capture.claim(idx, "t-4")
+        ck("坏掉的认领记录要抛", False, "没有抛异常")
+    except capture.IncompleteCapture:
+        ck("坏掉的认领记录要抛", True)
+    except Exception as exc:                          # noqa: BLE001
+        ck("坏掉的认领记录要抛", False, repr(exc))
+
+    # text_id 是外部给的字符串，不能拿它直接拼路径
+    weird = capture._index_file(idx, "../../../etc/passwd")
+    ck("text_id 带路径分隔符也跑不出索引目录",
+       os.path.dirname(os.path.abspath(weird)) == os.path.abspath(idx), weird)
+    ck("同一个 text_id 的键是稳定的",
+       capture._text_id_key("a-b") == capture._text_id_key("a-b"))
+    ck("不同 text_id 不撞键", capture._text_id_key("a") != capture._text_id_key("b"))
+
+
+def check_write_with_route(ck, tmp) -> None:
+    """落点与理由真的落到了 frontmatter（issue #1 的「路由可解释」）"""
+    where = os.path.join(tmp, "routed")
+    dest, reason, _s = capture.route("记一下存项目：接口定了", {"记一下存项目": where},
+                                     default_dir=os.path.join(tmp, "inbox"))
+    path = capture.write(dest, "接口定了", datetime(2026, 10, 5, 10, 10, 10),
+                         route_meta=(dest, reason))
+    with open(path, "r", encoding="utf-8") as fh:
+        text = fh.read()
+    ck("落到了口令指定的目录", os.path.dirname(path) == where, path)
+    ck("frontmatter 里有 route 行", 'route: "routed"' in text, text)
+    ck("frontmatter 里有 reason 行", 'reason: "' in text, text)
+    ck("理由里不留机器路径", tmp not in text, text)
+
+
 def main() -> int:
     ck = Checker()
     tmp = tempfile.mkdtemp(prefix="vp-capture-")
     try:
         print("=== 口述落库自测 ===")
         for fn, args in ((check_parse, ()), (check_decide, ()), (check_compose, ()),
-                         (check_write, (tmp,)), (check_write_cleanup, (tmp,))):
+                         (check_write, (tmp,)), (check_write_cleanup, (tmp,)),
+                         (check_index, (tmp,)), (check_write_with_route, (tmp,))):
             print("\n[%s]" % fn.__doc__.strip().splitlines()[0])
             fn(ck, *args)
     finally:

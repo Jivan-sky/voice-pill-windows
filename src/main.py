@@ -448,13 +448,83 @@ class VoicePill:
         self._remove_log()
         self._finish_delivery(gen)
 
+    def _route_meta(self, body: str) -> tuple:
+        """这次落哪、为什么落这 —— `(落点目录, 理由)`。
+
+        落点由 `capture.route()` 定，理由与落点同一次产出（见那里的说明）。
+        配置给的是两张表：口令 → 落点（`capture_routes`）、关键词 → 建议
+        （`capture_keywords`，**不参与落点**）。
+        """
+        dest, reason, _suggestion = capture.route(
+            body, self.settings.capture_routes,
+            default_dir=self.settings.capture_dir,
+            keywords=self.settings.capture_keywords)
+        return dest, reason
+
+    def _capture_index_dir(self) -> str:
+        """幂等索引放哪。单独一个方法，是为了自测能换掉它——默认那份在
+        `%LOCALAPPDATA%`，自测不该往用户的真目录里写东西。
+        """
+        return config.capture_index_dir()
+
+    def _write_capture(self, body: str, text_id: Optional[str] = None) -> dict:
+        """真正落一篇。**抛异常**（与 `_capture` 相反），因为调用方不同。
+
+        `_capture` 那条路（口述）失败要退回普通粘贴，由它自己兜；控制面
+        那条路（`capture` 动词）失败必须让调用方知道——契约里写明了坏输入
+        必须是可见的，不许静默成功。
+
+        返回契约 §3 的响应体。`text_id` 给了就按它去重：同一个 `text_id`
+        重投只落一篇，`duplicate: true` 指回第一次那一篇。
+        """
+        if not self.settings.capture_dir:
+            raise OSError("没配置 capture_dir（落库目标目录），不知道往哪写")
+        body = body or ""
+        if not body.strip():
+            # 空捕获不该在知识库里留一篇空笔记（契约 §3 坏输入表）。
+            return {"accepted": False, "dest": "", "reason": "",
+                    "path": "", "text_id": text_id or "",
+                    "duplicate": False, "skipped": "文本为空"}
+        dest, reason = self._route_meta(body)
+        index_dir = self._capture_index_dir()
+        claimed = False
+        if text_id:
+            record = capture.claim(index_dir, text_id)
+            if record is not None:
+                # 落过了：不再写第二篇，把第一次的结果原样回给调用方。
+                return {"accepted": True,
+                        "dest": record.get("dest", ""),
+                        "reason": record.get("reason", ""),
+                        "path": record.get("path", ""),
+                        "text_id": text_id,
+                        "duplicate": True,
+                        "skipped": None}
+            claimed = True
+        try:
+            path = capture.write(dest, body, route_meta=(dest, reason))
+        except BaseException:
+            # 没落成 → 把认领放掉，让重投还能落。不放的话这个 text_id 就
+            # 废了，而文字是真丢了（write 要么落成、要么什么都没留）。
+            if claimed:
+                capture.release(index_dir, text_id)
+            raise
+        if claimed:
+            capture.commit(index_dir, text_id,
+                           {"dest": capture.dest_label(dest), "reason": reason,
+                            "path": path})
+        return {"accepted": True, "dest": capture.dest_label(dest),
+                "reason": reason, "path": path, "text_id": text_id or "",
+                "duplicate": False, "skipped": None}
+
     def _capture(self, body: str) -> bool:
         """把这次口述落进 Inbox。成功 True；失败 False，且**绝不抛** ——
         调用方接着要走交付收尾（删 WAV、复位状态），不能在这里中断。
         失败时调用方会退回普通粘贴，所以字不会丢。
         """
         try:
-            path = capture.write(self.settings.capture_dir, body)
+            # 口述这条路没有 text_id：它的幂等靠「标记只对下一次口述有效」
+            # 与剪贴板交付，不是靠调用方给键（那条路是控制面的 capture）。
+            result = self._write_capture(body)
         except Exception as exc:        # noqa: BLE001 —— 兜底就是要宽
             traceback.print_exc()
             print("[落库失败] %s\n       改走普通粘贴，文字不会丢" % exc,
@@ -463,9 +533,14 @@ class VoicePill:
                 self.hud.set_text("落库失败，已改粘贴")
                 threading.Timer(2.5, self.hud.hide).start()
             return False
-        print("[已落 Inbox] %s" % path)
+        if not result.get("accepted"):
+            # 没落成（空正文）：退回普通粘贴，别把这次口述吞掉。
+            print("[落库跳过] %s" % result.get("skipped"), file=sys.stderr)
+            return False
+        path = result.get("path", "")
+        print("[已落 %s] %s" % (result.get("dest") or "Inbox", path))
         if self.settings.hud_enabled:
-            self.hud.set_text("已落 Inbox")
+            self.hud.set_text("已落 %s" % (result.get("dest") or "Inbox"))
             threading.Timer(2.5, self.hud.hide).start()
         return True
 
@@ -545,6 +620,14 @@ class VoicePill:
         if cmd == "shutup":
             self._speaker.stop()
             return {"speaking": False}
+        if cmd == "capture":
+            # 契约 §3：text_id 是幂等键，缺了就报错、不落盘——宁可吵，不许猜
+            # （同一个人今天把同一句话口述两遍是合法的，拿内容兜底会把第二
+            # 遍当重复吃掉）。
+            text_id = args.get("text_id")
+            if not isinstance(text_id, str) or not text_id.strip():
+                raise ValueError("capture 缺 text_id：它是幂等键，必须由调用方给")
+            return self._write_capture(str(args.get("text") or ""), text_id.strip())
         if cmd == "start":
             self.on_start()
         elif cmd == "stop":

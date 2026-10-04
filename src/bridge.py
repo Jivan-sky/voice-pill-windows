@@ -22,10 +22,12 @@
     响应  {"ok": true,  "data": {...}}
     响应  {"ok": false, "error": "人话错误信息"}
 
-命令只有七个：`status` / `start` / `stop` / `cancel` / `take` / `speak` /
-`shutup`。命令集合刻意留小：这条通道每多一个动词，就多一份「同机进程能拿它
-干什么」的想象力。`speak` / `shutup` 只让**本机扬声器**出声或闭嘴，读不到
-任何数据、也不落盘（见 docs/移植方案.md 第 16 节）。
+命令只有八个：`status` / `start` / `stop` / `cancel` / `take` / `speak` /
+`shutup` / `capture`。命令集合刻意留小：这条通道每多一个动词，就多一份「同机
+进程能拿它干什么」的想象力。`speak` / `shutup` 只让**本机扬声器**出声或闭嘴，
+读不到任何数据；`capture` 是唯一**会往用户文件系统写东西**的动词，所以它要
+一个调用方给的 `text_id` 做幂等键（见 docs/CONTRACT.md §3，以及 docs/移植
+方案.md 第 16 节）。
 
 `take` 是**取走**语义（返回并清空），不是查看：改口供的场合比反复读同一段
 多得多，而清空后队列里也不会一直堆着用户说过的话。
@@ -94,7 +96,7 @@ MAX_REQUEST_BYTES = 64 * 1024
 CONNECTION_IDLE_SECONDS = 60.0
 
 COMMANDS = ("status", "start", "stop", "cancel", "take",
-            "speak", "shutup")
+            "speak", "shutup", "capture")
 
 
 class BridgeError(Exception):
@@ -343,7 +345,7 @@ class BridgeServer:
 # 上面那个 BridgeServer 走的是 multiprocessing.connection：挑战应答是 HMAC-MD5、
 # 帧是 pickle，**只有 Python 说得出来**。控制面是给外部进程用的契约，不该被
 # 实现语言钉死（issue #1 要的就是「Codex 之外的 Agent 也能挂上」），所以这里再
-# 开一张嘴：同样七个命令、同一份 bridge.key，线上跑的是一行一条 JSON。旧的
+# 开一张嘴：同样的命令集合、同一份 bridge.key，线上跑的是一行一条 JSON。旧的
 # 通道一个字不改，纯增量。
 #
 # 为什么用 ctypes 直调 kernel32：标准库没有命名管道**服务端**，而这件事不值得

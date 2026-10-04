@@ -34,19 +34,22 @@ const (
 	MaxRequestBytes = 64 * 1024
 )
 
-// Commands 是 NDJSON 通道的七个命令，与 Python 侧 bridge.COMMANDS 一致。
-var Commands = []string{"status", "start", "stop", "cancel", "take", "speak", "shutup"}
+// Commands 是 NDJSON 通道的八个命令，与 Python 侧 bridge.COMMANDS 一致。
+var Commands = []string{"status", "start", "stop", "cancel", "take", "speak", "shutup", "capture"}
 
-// commandTimeouts 是各命令「连接 + 握手 + 一问一答」的整体上限，取自
-// Python 侧 plugins\voice-pill\mcp_server.py 里 _call 的实际取值。
+// commandTimeouts 是各命令「连接 + 握手 + 一问一答」的整体上限。已有七条取自
+// Python 侧 plugins\voice-pill\mcp_server.py 里 _call 的实际取值；capture 不在
+// 那份表里（它不是 MCP 工具，只走通道），按它实际干的事取 15 秒——它要往
+// 用户的库目录写一个文件，而那个目录可能在同步盘上，给足余量比抢时间对。
 var commandTimeouts = map[string]time.Duration{
-	"status": 8 * time.Second,
-	"start":  15 * time.Second,
-	"stop":   15 * time.Second,
-	"cancel": 15 * time.Second,
-	"take":   8 * time.Second,
-	"speak":  10 * time.Second,
-	"shutup": 8 * time.Second,
+	"status":  8 * time.Second,
+	"start":   15 * time.Second,
+	"stop":    15 * time.Second,
+	"cancel":  15 * time.Second,
+	"take":    8 * time.Second,
+	"speak":   10 * time.Second,
+	"shutup":  8 * time.Second,
+	"capture": 15 * time.Second,
 }
 
 var errLineTooLong = errors.New("这一行超过 64 KiB 上限")

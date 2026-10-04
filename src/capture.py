@@ -14,9 +14,11 @@
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 from datetime import datetime
-from typing import Optional, Sequence, Tuple
+from typing import Dict, Optional, Sequence, Tuple
 
 # ASR 常在开头带一个标点（「，」「：」之类），判定前先把这些字符剥掉。
 _LEADING = "，。、：；！？,.:;!? \t\u3000\"'“”‘’「」『』（）()【】[]"
@@ -156,6 +158,115 @@ def write(inbox_dir: str, body: str, now: Optional[datetime] = None,
             raise
         return path
     raise OSError("同一秒里同名文件太多，放弃：%s" % stem)
+
+
+def _unlink(path: str) -> None:
+    """删掉一个文件，删不掉就算了（收尾动作不该盖住真正的错）。"""
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+class IncompleteCapture(Exception):
+    """同一个 `text_id` 上一次**认领了、但没落完**。
+
+    唯一到得了这里的情形是进程死在「认领」与「落盘」之间。这时落没落下去
+    我们不知道——所以不猜：既不当成重复（会吞掉真该落的字），也不重写
+    （会写出第二篇）。报出来，让人看一眼。
+    """
+
+
+def _text_id_key(text_id: str) -> str:
+    """`text_id` → 文件名。
+
+    哈希而不是直接用：它是调用方给的字符串，可能带 `/`、`..`、`:`，直接
+    拼进路径会跑出索引目录。
+    """
+    return hashlib.sha256((text_id or "").encode("utf-8")).hexdigest()[:32]
+
+
+def _index_file(index_dir: str, text_id: str) -> str:
+    return os.path.join(index_dir, "%s.json" % _text_id_key(text_id))
+
+
+def _read_claimed(path: str) -> Dict:
+    """读一份已存在的认领记录。读不懂的一律当「没落完」——见 IncompleteCapture。"""
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            record = json.load(fh)
+    except (OSError, ValueError) as exc:
+        raise IncompleteCapture(
+            "认领记录读不出来（%s）：%s" % (path, exc))
+    if not isinstance(record, dict) or not record.get("state"):
+        raise IncompleteCapture("认领记录不成形：%s" % path)
+    return record
+
+
+def claim(index_dir: str, text_id: str) -> Optional[Dict]:
+    """认领一个 `text_id`。
+
+    - 返回 `None`：归你落盘（这次投递的唯一权利在你手上）。
+    - 返回 dict ：**已经落过了**，dict 是那次的记录，`path` 就是第一次那一篇。
+    - 抛 `IncompleteCapture`：上一次认领了没落完（见那个异常的说明）。
+
+    为什么必须先认领、后落盘：反过来（先落盘、再记档），进程死在两者之间
+    就会在重投时写出**第二篇**。而重复投递是常规情况——跨机那条路上 ack
+    会丢（见 docs/CONTRACT.md §3 规则 3），重试是设计里就有的。
+
+    为什么用 `O_CREAT|O_EXCL` 而不是读一份索引再改：认领本身必须原子。
+    一个文件一个人的写法天然原子，而且**跨进程**成立——引擎会被看门狗
+    重启，只存在内存里的表不算数。
+    """
+    if not index_dir:
+        raise OSError("没给索引目录，认领不了 text_id")
+    os.makedirs(index_dir, exist_ok=True)
+    path = _index_file(index_dir, text_id)
+    try:
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        record = _read_claimed(path)
+        if record.get("state") != "done":
+            raise IncompleteCapture("text_id 已认领但没落完：%s" % text_id)
+        return record
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
+            json.dump({"text_id": text_id, "state": "pending"}, fh,
+                      ensure_ascii=False)
+    except Exception:
+        _unlink(path)
+        raise
+    return None
+
+
+def commit(index_dir: str, text_id: str, record: Dict) -> None:
+    """把「已经落盘」补进认领文件（`state=done` + 落盘结果）。
+
+    写临时文件再 `os.replace`：替换是原子的，读的人不会撞见半个 JSON。
+    """
+    path = _index_file(index_dir, text_id)
+    tmp = path + ".tmp"
+    payload = dict(record)
+    payload["text_id"] = text_id
+    payload["state"] = "done"
+    with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
+        json.dump(payload, fh, ensure_ascii=False)
+    os.replace(tmp, path)
+
+
+def release(index_dir: str, text_id: str) -> None:
+    """落盘失败时放掉认领，让下一次重投还能落。
+
+    只删**还是 pending** 的那条：`done` 是既成事实，不能被一次的失败抹掉。
+    """
+    path = _index_file(index_dir, text_id)
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            record = json.load(fh)
+    except (OSError, ValueError):
+        return
+    if isinstance(record, dict) and record.get("state") == "pending":
+        _unlink(path)
 
 
 def route(text: str, routes: Optional[dict] = None, default_dir: str = "",

@@ -106,15 +106,19 @@ func TestMaxRequestBytesPinned(t *testing.T) {
 }
 
 // 命令表就是 Python mcp_server._call 的取值，别偷偷放大。
+//
+// capture 是唯一的例外：它不在 mcp_server 那份表里（不是 MCP 工具，只走
+// 通道），值由 Go 侧自定，理由见 client.go 里 commandTimeouts 的注释。
 func TestCommandTimeoutsPinned(t *testing.T) {
 	want := map[string]time.Duration{
-		"status": 8 * time.Second,
-		"start":  15 * time.Second,
-		"stop":   15 * time.Second,
-		"cancel": 15 * time.Second,
-		"take":   8 * time.Second,
-		"speak":  10 * time.Second,
-		"shutup": 8 * time.Second,
+		"status":  8 * time.Second,
+		"start":   15 * time.Second,
+		"stop":    15 * time.Second,
+		"cancel":  15 * time.Second,
+		"take":    8 * time.Second,
+		"speak":   10 * time.Second,
+		"shutup":  8 * time.Second,
+		"capture": 15 * time.Second,
 	}
 	if len(commandTimeouts) != len(want) {
 		t.Fatalf("命令表有 %d 条，想要 %d 条", len(commandTimeouts), len(want))

@@ -80,6 +80,18 @@ def logs_dir() -> str:
     return path
 
 
+def capture_index_dir() -> str:
+    """`text_id` 幂等索引的目录（见 capture.claim / capture.commit）。
+
+    为什么放 app_dir 而不是知识库：这是**这台机器**的投递记录（「哪个
+    text_id 落过、落在哪」），不是笔记。混进知识库等于往用户的库目录里塞
+    实现细节，而且那份索引会被同步、被当内容读。
+    """
+    path = os.path.join(app_dir(), "capture-index")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
 def app_log_path() -> str:
     """应用日志（驻留进程的黑匣子；无控制台时它还是 stdout/stderr 的落点）。
 
@@ -238,6 +250,10 @@ class Settings:
     capture_enabled: bool = False      # 默认关；开了才认下面的口令
     capture_dir: str = ""              # 落库目标目录（通常是 Obsidian 的 00_Inbox）
     capture_prefixes: list = field(default_factory=lambda: ["记一下"])
+    # 口令 → 落点目录。只有显式口令才定落点，所以这张表就是「哪些话该去哪」。
+    capture_routes: dict = field(default_factory=dict)
+    # 关键词 → 建议落点。**只出建议、不生效**，理由见 capture.route 的说明。
+    capture_keywords: dict = field(default_factory=dict)
 
     # ---- 持久化 ----
 
@@ -269,6 +285,9 @@ class Settings:
             # 配错类型就丢掉这一项、退回默认：配置坏了不该让驻留进程起不来。
             if not isinstance(data.get("capture_prefixes", []), list):
                 data.pop("capture_prefixes", None)
+            for key in ("capture_routes", "capture_keywords"):
+                if not isinstance(data.get(key, {}), dict):
+                    data.pop(key, None)
             return cls(**data)
         except (OSError, ValueError, TypeError):
             # 配置损坏不该让程序起不来，退回默认值

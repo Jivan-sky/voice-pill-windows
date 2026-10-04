@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""NDJSON 控制面通道自测：协议、鉴权、坏输入、七个命令。
+"""NDJSON 控制面通道自测：协议、鉴权、坏输入、八个命令。
 
 整轮跑在一条测试专用管道名（VOICEPILL_JSON_PIPE_NAME）上，不碰真身。
 
@@ -497,7 +497,8 @@ def check_concurrency(ck: Checker) -> None:
         server.stop()
 
 
-_SEVEN = ("status", "start", "stop", "cancel", "take", "speak", "shutup")
+_EIGHT = ("status", "start", "stop", "cancel", "take", "speak", "shutup",
+          "capture")
 
 
 def _echo_stub(seen: list):
@@ -516,7 +517,7 @@ def _echo_stub(seen: list):
 
 
 def check_commands(ck: Checker) -> None:
-    """七命令：回包对得上、参数原样到达、错误映射到 BridgeError"""
+    """八命令：回包对得上、参数原样到达、错误映射到 BridgeError"""
     seen: list = []
     _require_test_pipe()
     server = bridge.JsonBridgeServer(_echo_stub(seen))
@@ -524,7 +525,7 @@ def check_commands(ck: Checker) -> None:
     try:
         ck("服务端起来了", _wait(lambda: server.started, 5),
            "error=%s" % server.error)
-        for cmd in _SEVEN:
+        for cmd in _EIGHT:
             data = bridge.json_call(cmd, timeout=5.0)
             if cmd == "take":
                 ck("take 往返：取走语义的返回原样带回",
@@ -532,8 +533,8 @@ def check_commands(ck: Checker) -> None:
             else:
                 ck("%s 往返：data.echo 对得上" % cmd,
                    (data or {}).get("echo") == cmd, data)
-        ck("七个命令一个不少、顺序也对",
-           [c for c, _ in seen] == list(_SEVEN), [c for c, _ in seen])
+        ck("八个命令一个不少、顺序也对",
+           [c for c, _ in seen] == list(_EIGHT), [c for c, _ in seen])
 
         data = bridge.json_call("speak", timeout=5.0, text="念这句", auto=False)
         ck("speak：text 原样到达 handler",
