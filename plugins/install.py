@@ -37,7 +37,7 @@ exe 按「环境变量 → 自解析 → `%LOCALAPPDATA%\\VoicePill\\engine.json
 用法
 ----
     python plugins/install.py            缺什么补什么，可以反复跑
-    python plugins/install.py --check    只看现状，什么都不动
+    python plugins/install.py --check    只看现状：文件、市场清单，以及「Codex 装没装」（会调一次 codex CLI，约 0.4 秒）
 
 装完要**新开一个 Codex 线程**才会拾取新的技能与工具。
 """
@@ -276,20 +276,75 @@ def ensure_marketplace(check: bool) -> bool:
     return True
 
 
+PLUGIN_SPEC = "%s@%s" % (PLUGIN_NAME, MARKETPLACE_NAME)
+
+
+def codex_plugin_list() -> str:
+    """问 Codex 要插件清单；问不到（没装 codex / 超时 / 退出码非 0）返回空串。
+
+    「装没装上」只有 Codex 自己说了算。别去读 config.toml 推断——那只能说明
+    「登记过」。2026-10-04 那次 Codex 升级就是这么栽的：文件一个不缺、config 里
+    也有登记，插件其实没装，钩子一条没跑；而当时的 `--check` 会直接报「就绪」。
+    """
+    try:
+        proc = subprocess.run(["codex", "plugin", "list"],
+                              capture_output=True, text=True,
+                              encoding="utf-8", errors="replace",
+                              timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return proc.stdout if proc.returncode == 0 else ""
+
+
+def plugin_state(text: str, spec: str = PLUGIN_SPEC) -> str:
+    """从清单文本判这条插件装没装：installed / missing / unknown。
+
+    每行是「插件 状态 [版本] 来源」，以空白分列、列数不定（没装的那行没有版本，
+    状态是两个词 `not installed`）。只认「行首那一个 token 正好等于 spec」，
+    所以市场名（`Marketplace `personal``）和来源路径里出现同样的字串都不会被误认。
+    一张表头都没见到就返回 unknown——**输出格式变了要吵，不能当作没看见**。
+    """
+    saw_table = False
+    for line in text.splitlines():
+        parts = line.split()
+        if not parts:
+            continue
+        if parts[0] == "PLUGIN":
+            saw_table = True
+            continue
+        if not saw_table or parts[0] != spec:
+            continue
+        rest = " ".join(parts[1:]).lower()
+        return "installed" if rest.startswith("installed") else "missing"
+    return "missing" if saw_table else "unknown"
+
+
 def install_into_codex(check: bool) -> bool:
-    if check:
+    if not check:
+        if not shutil.which("codex"):
+            say(False, "PATH 里没有 codex，装不了", "自己跑：codex plugin add %s"
+                % PLUGIN_SPEC)
+            return False
+        cachebuster = (Path.home() / ".codex" / "skills" / ".system" / "plugin-creator"
+                       / "scripts" / "update_plugin_cachebuster.py")
+        if cachebuster.is_file():
+            _run([sys.executable, str(cachebuster), str(PLUGIN_DIR)])
+        rc = _run(["codex", "plugin", "add", PLUGIN_SPEC])
+        say(rc == 0, "codex plugin add", "退出码 %d" % rc)
+        if rc != 0:
+            return False
+    # 装完（或 --check）都走这一条：问 Codex，不问自己。
+    state = plugin_state(codex_plugin_list())
+    if state == "installed":
+        say(True, "Codex 已装上这条插件", PLUGIN_SPEC)
         return True
-    if not shutil.which("codex"):
-        say(False, "PATH 里没有 codex，装不了", "自己跑：codex plugin add %s@%s"
-            % (PLUGIN_NAME, MARKETPLACE_NAME))
+    if state == "missing":
+        say(False, "Codex 里没有这条插件，钩子与工具都不会生效",
+            "跑一次：.venv\\Scripts\\python.exe plugins\\install.py")
         return False
-    cachebuster = (Path.home() / ".codex" / "skills" / ".system" / "plugin-creator"
-                   / "scripts" / "update_plugin_cachebuster.py")
-    if cachebuster.is_file():
-        _run([sys.executable, str(cachebuster), str(PLUGIN_DIR)])
-    rc = _run(["codex", "plugin", "add", "%s@%s" % (PLUGIN_NAME, MARKETPLACE_NAME)])
-    say(rc == 0, "codex plugin add", "退出码 %d" % rc)
-    return rc == 0
+    say(False, "问不到 codex、或清单认不出来，无法确认装没装",
+        "自己看一眼：codex plugin list")
+    return False
 
 
 def main() -> int:

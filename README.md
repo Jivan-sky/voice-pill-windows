@@ -26,7 +26,7 @@ Voice Pill 的 Windows 移植工程。按住热键说话，松手把文字粘到
 | 发声（2026-10-03） | ✅ **完成** —— 离线神经 TTS，让它回话也能听见。Kokoro 多语言 v1.1（103 音色）落在本机模型目录，与 ASR 模型并排；懒加载、整段一条输出流 + 合成预取一句、按 Fn 立刻打断。**默认按需**（`speak_replies=false`），走控制面 `speak`/`shutup`、MCP 工具、或回合结束 `Stop` 钩子。不联网、不需要账号。见 `docs/移植方案.md` 第 16 节 |
 | 远端后端 | ❌ **两条都不可用** —— Codex 要 ChatGPT 付费令牌；豆包非官方协议 2026-10-03 复查确认服务端已不路由（凭据与握手都正常，服务端自己回 `service discovery failure`）。代码保留，改 `settings.json` 一行可切回。见 6.4 / 6.5 |
 | 真麦克风验收 | ✅ **通过（2026-10-03）** —— 真按 Fn 录 6.79 秒 → 解码 0.19 秒 → 粘贴成功，**用户确认「很准」** |
-| 常驻形态（M5 提前） | ✅ **完成（2026-10-03）** —— 单实例锁、无窗口开机自启（看门狗）、崩溃自拉、120 秒录音护栏、日志与留存清理、配置热重载、`--stop`。见 `docs/移植方案.md` 第 11 节 |
+| 常驻形态（M5 提前） | ✅ **完成（2026-10-03）** —— 单实例锁、无窗口常驻、**随 Codex 起落**（开 Codex 自动拉起、关 Codex 自动收摊）、崩溃自拉、120 秒录音护栏、日志与留存清理、配置热重载、`--stop`。开机自启是**可选**项，默认不装（2026-10-04 改，见下）。见 `docs/移植方案.md` 第 11、17 节 |
 | 控制面（2026-10-03） | ✅ **完成** —— 命名管道 + authkey，七个命令（`status`/`start`/`stop`/`cancel`/`take`/`speak`/`shutup`）。让外部进程（Codex 插件）能问状态、驱动录音、取走文字。见 `docs/移植方案.md` 第 12 节 |
 | 控制面加固（2026-10-03） | ✅ **完成** —— 发声自测踩出两个真 bug 并修掉：管道名原本全机共用（另一个用户、或密钥重建后的客户端能把控制面**永久打死**），客户端握手原本没有超时（会**永不返回**）。现在管道名按用户派生、建连 3 秒上限、服务端不被坏连接带走；`tools/bridge-selftest.py` 20 项专盯坏输入。见 `docs/移植方案.md` 12.5 |
 | 交付护栏（2026-10-03） | ✅ **完成** —— 对照上游 0.2.4：粘贴卡死 8 秒自动解锁；非 `PasteError` 异常不再静默锁死 Fn；代际令牌保证迟到的旧交付不碰新会话。见 `docs/移植方案.md` 第 14 节 |
@@ -81,16 +81,17 @@ Voice Pill 的 Windows 移植工程。按住热键说话，松手把文字粘到
 | `tools/local-asr.py` | **本地离线引擎**（sherpa-onnx + SenseVoice），实现同一份 NDJSON 契约，`local` 后端用它 |
 | `tools/build-plugin-exe.ps1` | 一键编 `bin/voicepill.exe`（`-trimpath -s -w`，二进制不带本机路径） |
 | `tools/pluginexe-selftest.py` | Go exe 端到端自测（61 项）：假引擎 + 真 exe 打八个工具与三个钩子，与冻结的 Python 契约对拍 |
+| `tools/install-selftest.py` | 安装自测（16 项）：**装没装上问 Codex 自己**（`codex plugin list`），问不到不许放行；`--check` 的退出码必须与 Codex 的说法一致 |
 | `src/console.py` | 控制台编码兜底（管道下打印 ✅ 会 GBK 崩）+ 应用日志 |
 | `src/single_instance.py` | 单实例互斥体：两个实例会各采一遍麦克风、各粘一遍 |
 | `src/bridge.py` | 控制面：命名管道 + authkey，给外部进程驱动本进程用 |
 | `src/anchor.py` | 锚点：沿父链找**最外层**那个 Codex 进程并落成纸条；句柄 + 映像核对，PID 被复用也不认错人 |
 | `src/supervise.py` | 看门狗：真身非正常退出时重拉，正常退出则一起退；还照 `anchor.json` 盯住 Codex，它一退就请真身收摊 |
-| `src/autostart.py` | 开机自启的安装/卸载/查看 |
+| `src/autostart.py` | 开机自启的安装/卸载/查看（**默认不装**：常驻由「随 Codex 起落」负责，见 `docs/移植方案.md` 第 17 节） |
 | `THIRD_PARTY.md` | 第三方组件与许可清单（本仓库内的正本） |
 | `docs/移植方案.md` | 路线对比、键位实测记录、里程碑、风险 |
 | `plugins/voice-pill/` | Codex 插件源码：技能、`.mcp.json`、三个钩子（`SessionStart` 拉起+绑命 / `UserPromptSubmit` 说话进对话 / `Stop` 回复出声）（**仓库是唯一源码**，靠目录联接出现在 Codex 眼里） |
-| `plugins/install.py` | 一键把插件接到本机：建目录联接、放置 exe、渲染模板、`codex plugin add`（不再铺 venv） |
+| `plugins/install.py` | 一键把插件接到本机：建目录联接、放置 exe、渲染模板、`codex plugin add`（不再铺 venv）。`--check` 会**问 Codex 确认装没装**，问不到就报「无法确认」 |
 
 ## 快速开始
 
@@ -106,9 +107,12 @@ Voice Pill 的 Windows 移植工程。按住热键说话，松手把文字粘到
 `settings.json` 的 `local_model_dir`（下载方式见 `docs/移植方案.md` 6.5）。
 两个远端后端的二进制仍放 `bin/`（见 `bin/README.md`）。
 
-## 常驻运行（推荐用法）
+## 常驻运行
 
-装成"开机就在、按 Fn 就用"的常驻进程：
+**默认形态：随 Codex 起落。** 装好插件后，开 Codex 会自动把它拉起来、关 Codex 会自动收摊——
+不需要开机自启，登录后也不会留下空跑的后台进程。见 `docs/移植方案.md` 第 17 节。
+
+只有「不开 Codex 也想按 Fn 说话」时，才需要装开机自启：
 
 ```bash
 # 装开机自启（本机非管理员注册不了计划任务，会自动落到启动文件夹 + 看门狗）
