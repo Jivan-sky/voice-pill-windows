@@ -82,6 +82,12 @@ func TestResolveRootOrder(t *testing.T) {
 	if got := resolveRoot(c.log, "", self("", errors.New("boom")), fromJSON("J")); got != "J" {
 		t.Fatalf("自解析失败应当退 engine.json，得到 %q", got)
 	}
+	if got := resolveRoot(c.log, "", self("", nil), fromJSON("J")); got != "J" {
+		t.Fatalf("自解析认不出根（空串）应当退 engine.json，得到 %q", got)
+	}
+	if !c.has("engine_root_self_missing") {
+		t.Fatalf("自解析认不出根应当记 engine_root_self_missing：%v", c.lines)
+	}
 	if got := resolveRoot(c.log, "", self("", errors.New("boom")), fromJSON("")); got != "" {
 		t.Fatalf("三级都拿不到应当回空串，得到 %q", got)
 	}
@@ -91,8 +97,25 @@ func TestResolveRootOrder(t *testing.T) {
 }
 
 func TestRootFromExeDir(t *testing.T) {
-	if got := rootFromExeDir(`D:\repo\plugins\voice-pill`); got != `D:\repo` {
-		t.Fatalf("rootFromExeDir=%q，想要 D:\\repo", got)
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, "src"), 0o777); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"main.py", "supervise.py"} {
+		if err := os.WriteFile(filepath.Join(repo, "src", name), []byte("#"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cases := []struct{ name, dir, want string }{
+		{"插件那份：<根>\\plugins\\voice-pill 往上两级", filepath.Join(repo, "plugins", "voice-pill"), repo},
+		{"开发那份：<根>\\bin 往上一级", filepath.Join(repo, "bin"), repo},
+		{"仓库根自己摆一份", repo, repo},
+		{"摆在外面认不出：回空串，让 engine.json 接手", t.TempDir(), ""},
+	}
+	for _, tc := range cases {
+		if got := rootFromExeDir(tc.dir); got != tc.want {
+			t.Fatalf("%s：rootFromExeDir(%q)=%q，想要 %q", tc.name, tc.dir, got, tc.want)
+		}
 	}
 }
 

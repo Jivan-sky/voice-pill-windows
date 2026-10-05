@@ -110,11 +110,15 @@ func resolveRoot(log Logger, envRoot string, self func() (string, error), fromJS
 		emit(log, "engine_root", "source", "env", "root", envRoot)
 		return envRoot
 	}
-	if root, err := self(); err == nil && root != "" {
+	root, err := self()
+	switch {
+	case err != nil:
+		emit(log, "engine_root_self_failed", "error", errText(err))
+	case root == "":
+		emit(log, "engine_root_self_missing")
+	default:
 		emit(log, "engine_root", "source", "self", "root", root)
 		return root
-	} else {
-		emit(log, "engine_root_self_failed", "error", errText(err))
 	}
 	if root := fromJSON(); root != "" {
 		emit(log, "engine_root", "source", "engine.json", "root", root)
@@ -124,8 +128,8 @@ func resolveRoot(log Logger, envRoot string, self func() (string, error), fromJS
 	return ""
 }
 
-// selfRoot 自解析：exe 的真实路径（剥 \\?\ 前缀）上两级就是仓库根；拿不到
-// 真实路径就退 os.Readlink(exe 所在目录)（目录联接的目标）再上两级。
+// selfRoot 自解析：从 exe 的真实路径（剥 \\?\ 前缀）所在目录往上认仓库根；
+// 拿不到真实路径就退 os.Readlink(exe 所在目录)（目录联接的目标）再认。
 func selfRoot() (string, error) {
 	exe, err := os.Executable()
 	if err != nil {
@@ -142,9 +146,27 @@ func selfRoot() (string, error) {
 	return rootFromExeDir(stripLongPrefix(target)), nil
 }
 
-// rootFromExeDir：exe 在 <仓库根>\plugins\voice-pill\ 下，上两级是仓库根。
+// rootWalkUp 是最多往上认几级。两种摆法都要罩住：插件那份在
+// <仓库根>\plugins\voice-pill\（两级），开发那份在 <仓库根>\bin\（一级）。
+const rootWalkUp = 4
+
+// rootFromExeDir：从 exe 所在目录往上认仓库根。不写死级数——两种摆法差一级，
+// 写死必然错一种。认的是标记：看门狗要跑的 src\supervise.py 和引擎
+// src\main.py 都在才算数。认不出就回 ""，交给下一级 engine.json（install.py
+// 会写下正确的根）。认错根比认不出更糟：会拿别人的 supervise.py 起一个不是
+// 这个仓库的引擎。
 func rootFromExeDir(dir string) string {
-	return filepath.Dir(filepath.Dir(dir))
+	for i := 0; i < rootWalkUp; i++ {
+		if isFile(filepath.Join(dir, "src", "main.py")) && isFile(filepath.Join(dir, "src", "supervise.py")) {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return ""
 }
 
 // finalPathName 用 GetFinalPathNameByHandle 拿真实路径（走目录联接时返回
