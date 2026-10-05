@@ -1028,6 +1028,17 @@ def stop_running_instance() -> int:
     if not single_instance.request_quit():
         print("退出信号发不出去。", file=sys.stderr)
         return 1
+    # 停用纸条在这里落，**不留到看门狗那一步去猜**。第一性原理：只有这里知道
+    # "用户明确要停"。看门狗只有在"驻留是自己拉起的子进程"（正常档）时才拿得到
+    # 退出码 0；接管档下它不是父进程、拿不到退出码，那条路以前就不落纸，于是哨兵
+    # 照样把驻留补拉回来、`--stop` 等于没生效（2026-10-06 实测：第一次 `--stop`
+    # 后 60 秒内驻留就被补拉回来了）。看门狗那边"子进程 code 0 也落一张"的规则留着
+    # 兜 Ctrl+C 那一档（那时它是父进程）。
+    #
+    # 只有**真的发出去了**才落纸：发不出去=没有真的发生"用户停了一次"。
+    # 哨兵判的是两张纸的先后，pid 只是记录；锚点读不到就写 0。
+    note = anchor.read_note()
+    anchor.write_stop_note(note[0] if note else 0)
     print("已请求退出（若它正在录音，会等这次收尾）。日志：%s"
           % config.app_log_path())
     return 0
