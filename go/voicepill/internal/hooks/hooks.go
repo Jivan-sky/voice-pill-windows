@@ -61,7 +61,7 @@ func run(kind string, in io.Reader, out io.Writer, caller Caller) int {
 	case KindStop:
 		stop(in, out, caller)
 	case KindSessionStart:
-		sessionStart(in, out, caller)
+		sessionStart(in, out)
 	default:
 		writeJSONLine(out, continueOutput{Continue: true})
 	}
@@ -221,7 +221,7 @@ func stop(in io.Reader, out io.Writer, caller Caller) {
 
 // sessionStart = Python hook_session_start.main：写锚点纸条，确保看门狗在跑。
 // 所有异常都吞掉只记日志——拉起引擎失败不该拦住会话。
-func sessionStart(in io.Reader, out io.Writer, caller Caller) {
+func sessionStart(in io.Reader, out io.Writer) {
 	payload := readPayload(in)
 	engine.PluginLog("hook_session_start",
 		"session", textOf(payload["session_id"]),
@@ -230,6 +230,12 @@ func sessionStart(in io.Reader, out io.Writer, caller Caller) {
 	// 先挂上放行输出：无论下面发生什么，这一行都要出去。
 	defer writeJSONLine(out, continueOutput{Continue: true})
 
+	// 这个钩子**只写锚点，不拉引擎**（2026-10-05 改）。
+	//
+	// 拉引擎的活交给两处更早也更可靠的入口：插件 MCP server 一被宿主拉起来就预热
+	// （实测比本钩子早 16 秒），以及登录常驻的哨兵。本钩子是非托管钩子，没通过
+	// review/trust 时整条路是哑的；留着它再拉一次，只是多一个并发拉起点去跟别人抢
+	// 看门狗互斥体（实测 14 秒里 8 次预热 → 4 次重复 spawn，白拉 3 只）。
 	func() {
 		defer func() {
 			if r := recover(); r != nil {
@@ -237,24 +243,5 @@ func sessionStart(in io.Reader, out io.Writer, caller Caller) {
 			}
 		}()
 		engine.WriteAnchor(engine.PluginLog)
-	}()
-
-	func() {
-		defer func() {
-			if r := recover(); r != nil {
-				engine.PluginLog("start_error", "error", fmt.Sprint(r))
-			}
-		}()
-		root := engine.Root(engine.PluginLog)
-		if !engine.EnsureSupervisor(root, engine.PluginLog) {
-			// 已经有人在守，或者拉不起来（自测临时根没有 supervise.py）——都不等。
-			return
-		}
-		prober := func(timeout time.Duration) (json.RawMessage, error) {
-			return callWithin(caller, "status", nil, timeout)
-		}
-		if engine.WaitReady(prober, engine.PluginLog) {
-			engine.PluginLog("ready")
-		}
 	}()
 }

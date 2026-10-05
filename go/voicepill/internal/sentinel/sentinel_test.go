@@ -24,6 +24,14 @@ type fakeState struct {
 	hasNote bool
 	binds   []string
 	events  []string
+
+	// supDead=true 表示「看门狗不在守」；默认 false（有人在守）。
+	supDead bool
+	// stopped / stopPID 是停用纸那一路（默认没有纸）。
+	stopped bool
+	stopPID int
+	// bindFail=true 让补拉失败，验「一次死亡只补一次」。
+	bindFail bool
 }
 
 func newFake(state *fakeState) *Watcher {
@@ -72,10 +80,23 @@ func newFake(state *fakeState) *Watcher {
 			}
 			return false
 		},
+		SupervisorAlive: func() bool {
+			state.mu.Lock()
+			defer state.mu.Unlock()
+			return !state.supDead
+		},
+		Stopped: func() (bool, int) {
+			state.mu.Lock()
+			defer state.mu.Unlock()
+			return state.stopped, state.stopPID
+		},
 	}
 	w.Bind = func(pid int, image string) bool {
 		state.mu.Lock()
 		defer state.mu.Unlock()
+		if state.bindFail {
+			return false
+		}
 		state.binds = append(state.binds, fmt.Sprintf("%d:%s", pid, image))
 		state.note = engine.Note{PID: pid, Image: image}
 		state.hasNote = true
@@ -249,6 +270,99 @@ func TestWatchRebindsAfterRestart(t *testing.T) {
 	if binds[1] != "200:chatgpt.exe" {
 		t.Fatalf("第二次该绑新 pid，得到 %v", binds)
 	}
+	close(stop)
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Stop 关掉之后 Watch 没退出来")
+	}
+}
+
+// 看门狗自己崩了、Codex 还开着：哨兵该把它补拉回来（纸条上写着它才补）。
+func TestWatchAppRevivesSupervisor(t *testing.T) {
+	state := &fakeState{
+		apps:    []app{{pid: 100, image: "chatgpt.exe"}},
+		alive:   true,
+		note:    engine.Note{PID: 100, Image: "chatgpt.exe"},
+		hasNote: true,
+		supDead: true,
+	}
+	w := newFake(state)
+	stop, done := make(chan struct{}), make(chan struct{})
+	w.Stop = stop
+	go func() { defer close(done); w.Watch() }()
+
+	waitFor(t, "补拉一次", func() bool { return state.countEvent("sentinel_revive") == 1 })
+	waitFor(t, "按纸条上的 pid 重绑", func() bool {
+		binds, _ := state.snapshot()
+		return len(binds) == 1
+	})
+	if binds, _ := state.snapshot(); binds[0] != "100:chatgpt.exe" {
+		t.Fatalf("补拉该用纸条上的 pid 与映像，得到 %v", binds)
+	}
+
+	close(stop)
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Stop 关掉之后 Watch 没退出来")
+	}
+}
+
+// 用户明确停过这一代 Codex（纸条在、Codex 还开着）：不许偷偷拉回来。
+func TestWatchAppDoesNotReviveAfterStop(t *testing.T) {
+	state := &fakeState{
+		apps:    []app{{pid: 100, image: "chatgpt.exe"}},
+		alive:   true,
+		note:    engine.Note{PID: 100, Image: "chatgpt.exe"},
+		hasNote: true,
+		supDead: true,
+		stopped: true,
+		stopPID: 100,
+	}
+	w := newFake(state)
+	stop, done := make(chan struct{}), make(chan struct{})
+	w.Stop = stop
+	go func() { defer close(done); w.Watch() }()
+
+	waitFor(t, "记下被拦住", func() bool { return state.countEvent("sentinel_revive_blocked") == 1 })
+	time.Sleep(30 * time.Millisecond)
+	if got := state.countEvent("sentinel_revive"); got != 0 {
+		t.Fatalf("停用纸在就不该补拉，得到 %d 次 revive", got)
+	}
+	if binds, _ := state.snapshot(); len(binds) != 0 {
+		t.Fatalf("停用纸在就不该重绑，得到 %v", binds)
+	}
+
+	close(stop)
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Stop 关掉之后 Watch 没退出来")
+	}
+}
+
+// 补拉失败的原因都是持续性的（supervise.py 不见了之类），不许每秒硬撞。
+func TestWatchAppRevivesOncePerDeath(t *testing.T) {
+	state := &fakeState{
+		apps:     []app{{pid: 100, image: "chatgpt.exe"}},
+		alive:    true,
+		note:     engine.Note{PID: 100, Image: "chatgpt.exe"},
+		hasNote:  true,
+		supDead:  true,
+		bindFail: true,
+	}
+	w := newFake(state)
+	stop, done := make(chan struct{}), make(chan struct{})
+	w.Stop = stop
+	go func() { defer close(done); w.Watch() }()
+
+	waitFor(t, "补拉一次", func() bool { return state.countEvent("sentinel_revive") == 1 })
+	time.Sleep(40 * time.Millisecond)
+	if got := state.countEvent("sentinel_revive"); got != 1 {
+		t.Fatalf("一次死亡只补一次，得到 %d 次 revive", got)
+	}
+
 	close(stop)
 	select {
 	case <-done:

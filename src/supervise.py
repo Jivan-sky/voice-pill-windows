@@ -178,16 +178,21 @@ def _wait_child(proc, watcher) -> tuple:
 
 
 def main() -> int:
-    console.attach_app_log(config.app_log_path(), label="看门狗启动")
+    # 横幅先打：每只进程都要留下「我来过」这条痕。抢不到锁的那只以前只在 stderr
+    # 说话，而 warm-up 拉起它时 stderr 指向 devnull —— 判决消失，日志里只剩一条没有
+    # 下文的「看门狗启动」（2026-10-05 实测踩到：四次 spawn 只留下两条横幅，另两条
+    # 连 Python 启动都没跑完）。现在两种下场都落在 app.log 上。
+    console.attach_app_log(config.app_log_path(), label="看门狗进程起")
 
     lock = single_instance.InstanceLock(single_instance.SUPERVISOR_MUTEX_NAME)
     try:
         if not lock.acquire():
-            print("[看门狗] 已经有一只在看守了，本进程退出。", file=sys.stderr)
+            print("[看门狗] 已经有一只在看守了，本进程退出。")
             return 1
     except OSError as exc:
-        print("[看门狗] 拿不到自己的互斥体：%s" % exc, file=sys.stderr)
+        print("[看门狗] 拿不到自己的互斥体：%s" % exc)
         return 1
+    print("[看门狗] 互斥体到手，开始看守。")
 
     watcher = Watcher()
     code = 0
@@ -226,6 +231,10 @@ def main() -> int:
                 return 1
             time.sleep(delay)
     finally:
+        # 自己决定收摊的时候留一张停用纸条：哨兵靠它把「用户的决定」和「被打死」
+        # 分开。被打死走不到这里——纸条不在，哨兵才敢补拉（见 engine.StoppedByUser）。
+        # pid 要在 close() 之前取：close() 一断锚点，pid 就归 0 了。
+        anchor.write_stop_note(watcher.pid())
         watcher.close()
         lock.release()
 

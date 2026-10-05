@@ -24,3 +24,7 @@ plugins/voice-pill/voicepill.exe
 # 副本（人设的源只有那一份，见 ANC 的「双源手抄」那条）。
 plugins/claude-code/voicepill.exe
 plugins/claude-code/persona.md
+
+# exe 换装时的旧份：被运行中的 MCP 进程钉着，重启 Codex 之后才删得掉
+plugins/voice-pill/voicepill.exe.old*
+plugins/claude-code/voicepill.exe.old*

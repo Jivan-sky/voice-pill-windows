@@ -243,6 +243,46 @@ def read_note():
         return None
     return (pid, image) if pid > 0 else None
 
+# ---------- 停用纸条（看门狗写给哨兵的那张）----------
+
+def stop_note_path() -> str:
+    """停用纸条位置。跟 anchor.json 放一起（同一个 app_dir）。"""
+    return os.path.join(config.app_dir(), "stopped.json")
+
+
+def write_stop_note(pid: int) -> bool:
+    """看门狗**自己决定**收摊时留一张纸。
+
+    只在一个地方调：看门狗走到退出（子进程 code 0 / 锚点没了 / 连崩到放弃）。
+    被外力打死走不到那一步——所以「这张纸在不在」正好把「用户的决定」和「崩了」
+    分开，哨兵补拉之前先看它（见 go/.../engine.StoppedByUser）。
+
+    pid 记的是当时绑着的那个 Codex；没绑就写 0。哨兵那边判的是**两张纸的先后**，
+    不是 pid 相等（pid 会被复用），所以这里只做记录。
+    """
+    path = stop_note_path()
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump({"pid": int(pid or 0), "at": time.time()}, fh)
+        os.replace(tmp, path)
+        return True
+    except OSError:
+        return False
+
+
+def read_stop_note():
+    """读停用纸条，返回 (pid, at)；读不到 / 格式不对返回 None。"""
+    try:
+        with open(stop_note_path(), "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        if not isinstance(data, dict):
+            return None
+        return (int(data.get("pid") or 0), float(data.get("at") or 0.0))
+    except (OSError, ValueError, TypeError):
+        return None
+
 def status_line() -> str:
     """给 `main.py --check` 用的一句话：现在绑的是谁、还作不作数。"""
     note = read_note()

@@ -589,6 +589,56 @@ func WriteNote(pid int, image string) bool {
 	return true
 }
 
+// ---------- 停用纸条（看门狗自己决定收摊时留下的那张，给哨兵看）----------
+
+// StopNote 是「看门狗自己决定收摊」时留下的纸条，字段与 Python 侧
+// anchor.write_stop_note 一致。
+type StopNote struct {
+	PID int     `json:"pid"`
+	At  float64 `json:"at"`
+}
+
+// StopNotePath 是停用纸条，与 Python 侧 anchor.stop_note_path() 同一个文件。
+func StopNotePath() string { return filepath.Join(bridge.AppDir(), "stopped.json") }
+
+// ReadStopNote 读停用纸条。读不到 / 格式不对 → ok=false（当「没有这张纸」）。
+func ReadStopNote() (StopNote, bool) {
+	raw, err := os.ReadFile(StopNotePath())
+	if err != nil {
+		return StopNote{}, false
+	}
+	var note StopNote
+	if err := json.Unmarshal(raw, &note); err != nil {
+		return StopNote{}, false
+	}
+	if note.At <= 0 {
+		return StopNote{}, false
+	}
+	return note, true
+}
+
+// StoppedByUser 判断「这一代 Codex 是不是已经被明确停过了」。
+//
+// 判据是两张纸的先后：停用纸条比锚点纸条**新**，就说明最后一次决定是「停」，
+// 哨兵不许补拉；锚点比停用纸条新，说明钩子/预热为新一代 Codex 重写过锚点
+// （WriteNote 只在 pid+映像真的变了才重写），这一代是全新的，可以拉。
+//
+// 为什么用时间而不比 pid：pid 会被复用；而「锚点被重写」这个既成事实比 pid
+// 相等更准。两张纸缺任何一张都不拦路——能力本身比绑生命周期重要。
+//
+// 第二个返回值是停用纸条上记的 pid，只给日志用（0 = 没有这张纸）。
+func StoppedByUser() (bool, int) {
+	stop, ok := ReadStopNote()
+	if !ok {
+		return false, 0
+	}
+	anchorNote, ok := ReadNote()
+	if !ok {
+		return false, stop.PID
+	}
+	return stop.At > anchorNote.At, stop.PID
+}
+
 // WriteAnchor 把「我在谁的子孙里」写下来。找不到锚点就只记日志，不拦路。
 func WriteAnchor(log Logger) (pid int, image string, ok bool) {
 	foundPID, foundImage, found := FindAnchor()

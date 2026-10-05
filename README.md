@@ -35,8 +35,9 @@ Voice Pill 的 Windows 移植工程。按住热键说话，松手把文字粘到
 | 与 Codex 共同启停（2026-10-03） | ✅ **完成** —— 开 Codex 自动拉起（`SessionStart` 钩子，幂等），关 Codex 自动收摊（看门狗照 `anchor.json` 盯住**最外层**那个 Codex 进程，人一没就走 `--stop` 优雅路径）。**认人不认号**：句柄钉住内核里的进程对象，PID 被复用也不会认错；纸条读不到就退回常驻，绝不因为绑不上就不干活。`tools/supervise-selftest.py` 47 项把关。见 `docs/移植方案.md` 第 17 节 |
 | 口述落库（2026-10-03） | ✅ **完成** —— 两条触发：**双击 Fn** 给下一次口述打标记（HUD 提示；不经过 ASR，所以口令被听歪也不影响），或按 Fn 说「记一下：…」。松手后不粘贴，而是落成 Obsidian `00_Inbox/` 下的一篇捕获笔记（带 `type/inbox`）。判定与写盘是纯函数，可脱离窗口单测；目标目录写在 `settings.json`，仓库里不存机器路径。见 `docs/移植方案.md` 第 18 节 |
 | 插件换 Go 单 exe（2026-10-03） | ✅ **完成** —— 插件侧交付物从「plugin venv + 8 个 Python 文件」换成一个 `voicepill.exe`（8 个 MCP 工具 + 3 个钩子入口）；控制面新增一条语言无关的 NDJSON 通道，旧的 `multiprocessing` 通道原样保留。**实测（同一台机器，各 5 次取中位数）**：`initialize` 往返 Python 版 **2345 ms** → Go 版 **42 ms**（约 56×）；复跑办法 `tools/pluginexe-selftest.py --timing`，只报数不判失败。见 `docs/移植方案.md` 第 19–22 节 |
-| 提前拉起：登录哨兵（2026-10-05） | ✅ **能力完成，真机实测 3.0 秒就绪** —— `SessionStart` 钩子要等一次会话真的开始才打，实测桌面壳起来到钩子之间有 **55 秒**空档，这段时间按 Fn 没反应。补一个登录时起的常驻哨兵（Go 单 exe，2 秒扫一次进程表）：认出 Codex 就写锚点 + 拉看门狗。**实测**：引擎先停干净、再起哨兵，0.3 秒绑上锚点、**3.0 秒**控制面就绪；加上最长 2 秒的扫描间隔，最坏约 **5 秒**，落进「10 秒（±5 秒）」。它不跟 `--stop` 对着干（锚点纸条挡在拉起之前，实测停完 20 秒哨兵没动手）。顺带修掉一处认根 bug：exe 摆在 `bin/` 下时会认错仓库根、直接拉不起引擎（见第 23.8 节）。**待装机**：登录自启还没登记（插件目录那份 exe 已于 2026-10-05 换新）。顺手修掉一处：插件走目录联接安装时纸条上的路径没归一，`--status` 会误报「没在跑」、`--stop` 会拒绝动手（见 23.10）。`go test ./internal/sentinel/` 八个用例；`pluginexe-selftest` 从 61 项加到 80 项。见 `docs/移植方案.md` 第 23 节 |
+| 提前拉起：登录哨兵（2026-10-05） | ✅ **能力完成，真机实测 3.0 秒就绪** —— `SessionStart` 钩子要等一次会话真的开始才打，实测桌面壳起来到钩子之间有 **55 秒**空档，这段时间按 Fn 没反应。补一个登录时起的常驻哨兵（Go 单 exe，2 秒扫一次进程表）：认出 Codex 就写锚点 + 拉看门狗。**实测**：引擎先停干净、再起哨兵，0.3 秒绑上锚点、**3.0 秒**控制面就绪；加上最长 2 秒的扫描间隔，最坏约 **5 秒**，落进「10 秒（±5 秒）」。它不跟 `--stop` 对着干（锚点纸条挡在拉起之前，实测停完 20 秒哨兵没动手）。顺带修掉一处认根 bug：exe 摆在 `bin/` 下时会认错仓库根、直接拉不起引擎（见第 23.8 节）。**登录自启已登记**（2026-10-05 实测，写 `HKCU\...\Run`，指插件目录那条联接路径）。顺手修掉一处：插件走目录联接安装时纸条上的路径没归一，`--status` 会误报「没在跑」、`--stop` 会拒绝动手（见 23.10）。`go test ./internal/sentinel/` 八个用例；`pluginexe-selftest` 从 61 项加到 80 项。见 `docs/移植方案.md` 第 23 节 |
 | 宿主一拉起插件就预热（2026-10-05） | ✅ **完成** —— MCP server（`voicepill.exe`）启动那一下就去写锚点 + 幂等拉看门狗，不等 `SessionStart` 钩子。实测钩子比 MCP 晚 **16 秒**（21:59:14 vs 21:59:30），而且钩子是非托管钩子、没通过 review/trust 时整条路是哑的，这一路不受影响。预热丢在后台协程，`initialize` 往返不受影响。见 `docs/移植方案.md` 第 23.9 节 |
+| 常驻化收尾：补拉 / 停用纸条 / 隐形 / 钩子瘦身（2026-10-05） | ✅ **完成** —— 四件事。① `SessionStart` 钩子**只写锚点**，不再跟别人抢看门狗（实测 14 秒里 8 次预热 → 4 次 `supervisor_spawned`，白拉 3 只）；② 哨兵**补拉**「看门狗崩了、Codex 还开着」这一种（实测按 Fn 哑 75 秒就是这么来的），一次死亡只补一次；③ 新增**停用纸条** `stopped.json`，补拉**不跟 `--stop` 对着干**（判据是两张纸的先后，不比 pid）；④ 哨兵**隐形**——从 Run 键拉起不再留一个常驻黑窗（只藏独占的那个控制台，终端里跑的那份不碰）。`go test ./...` 全过、`pluginexe-selftest` 80 项 0 失败、`install-selftest` 真机一把全过。见 `docs/移植方案.md` 第 23.11 节 |
 
 **M1 验收记录（2026-10-02）**
 
@@ -92,7 +93,7 @@ Voice Pill 的 Windows 移植工程。按住热键说话，松手把文字粘到
 | `src/autostart.py` | 开机自启的安装/卸载/查看（**默认不装**：常驻由「随 Codex 起落」负责，见 `docs/移植方案.md` 第 17 节） |
 | `THIRD_PARTY.md` | 第三方组件与许可清单（本仓库内的正本） |
 | `docs/移植方案.md` | 路线对比、键位实测记录、里程碑、风险 |
-| `plugins/voice-pill/` | Codex 插件源码：技能、`.mcp.json`、三个钩子（`SessionStart` 拉起+绑命 / `UserPromptSubmit` 说话进对话 / `Stop` 回复出声）（**仓库是唯一源码**，靠目录联接出现在 Codex 眼里） |
+| `plugins/voice-pill/` | Codex 插件源码：技能、`.mcp.json`、三个钩子（`SessionStart` 只写锚点 / `UserPromptSubmit` 说话进对话 / `Stop` 回复出声）（**仓库是唯一源码**，靠目录联接出现在 Codex 眼里） |
 | `plugins/install.py` | 一键把插件接到本机：建目录联接、放置 exe、渲染模板、`codex plugin add`（不再铺 venv）。`--check` 会**问 Codex 确认装没装**，问不到就报「无法确认」 |
 
 ## 快速开始
@@ -157,7 +158,7 @@ voicepill.exe sentinel --stop         # 请哨兵退出（引擎不受影响，�
 voicepill.exe sentinel --uninstall    # 撤掉登录自启
 ```
 
-它每 2 秒扫一次进程表，认出 Codex 就写锚点并拉起看门狗，之后盯到它退出、回到等待；扫到 + 预热 ≈ **6 秒**。
+它每 2 秒扫一次进程表，认出 Codex 就写锚点并拉起看门狗，之后盯到它退出、回到等待；盯着的期间看门狗要是不在了（崩了），它会按纸条上的 pid **补拉一次**（一次死亡只补一次，且不跟 `main.py --stop` 对着干——见 `stopped.json`）。扫到 + 预热 ≈ **6 秒**。
 代价是一个常驻小进程（实测工作集 9.9 MB；60 秒里只花 0.031 秒 CPU，约单核 0.05%），**引擎本体照旧不常驻**。它不跟
 `main.py --stop` 对着干：锚点纸条上已经写着这个 pid 就不动。见 `docs/移植方案.md` 第 23 节。
 
@@ -207,8 +208,8 @@ Codex 也能反过来问状态、请你录一段、把队列里的字取走。�
 装好后 Codex 多出八个工具：`voice_pill_status` / `voice_pill_listen` /
 `voice_pill_stop` / `voice_pill_cancel` / `voice_pill_take` / `voice_pill_speak` /
 `voice_pill_shutup` / `voice_pill_prompt_hook`，外加三个钩子：`SessionStart`
-（开 Codex 拉起驻留实例并绑命）、`UserPromptSubmit`（说的话进对话）、`Stop`
-（回复出声）。待取文字有保鲜期（`pending_ttl_minutes`，默认 30 分钟）：
+（只写锚点，拉引擎交给 MCP 预热与哨兵）、`UserPromptSubmit`（说的话进对话）、
+`Stop`（回复出声）。待取文字有保鲜期（`pending_ttl_minutes`，默认 30 分钟）：
 更早说的不再注入，也不会留到下一轮。
 
 ## 许可

@@ -90,6 +90,10 @@ type Watcher struct {
 	Bind func(pid int, image string) bool
 	// Alive 问「这个 Codex 还在不在」。
 	Alive func(pid int) bool
+	// SupervisorAlive 问「看门狗还在不在守」（没人在守 = 拿得到互斥体）。
+	SupervisorAlive func() bool
+	// Stopped 问「这一代 Codex 是不是已经被明确停过了」（第二个返回值只给日志）。
+	Stopped func() (bool, int)
 	// Stop 只给单测收尾用：nil = 永远跑（生产就是这样，靠进程退出收场）。
 	Stop <-chan struct{}
 
@@ -108,6 +112,9 @@ func New() *Watcher {
 		Anchor: engine.FindAnchorFrom,
 		Note:   engine.ReadNote,
 		Alive:  ProcessAlive,
+
+		SupervisorAlive: engine.SupervisorAlive,
+		Stopped:         engine.StoppedByUser,
 	}
 	w.Bind = w.bind
 	if apps, ok := fakeApps(); ok {
@@ -137,6 +144,10 @@ func New() *Watcher {
 			}
 			return false
 		}
+		// 假世界里没有看门狗这一档：说它一直在守，就没「补拉」可言——
+		// 自测绝不许真起进程。
+		w.SupervisorAlive = func() bool { return true }
+		w.Stopped = func() (bool, int) { return false, 0 }
 	}
 	if w.Poll <= 0 {
 		w.Poll = PollInterval
@@ -274,15 +285,60 @@ func (w *Watcher) Watch() {
 	}
 }
 
-// watchApp 盯着一个 Codex 直到它走。
+// watchApp 盯着一个 Codex 直到它走，顺便看着看门狗。
+//
+// 为什么在这里看：哨兵认下一个 Codex 之后就只盯它，期间不再扫表，于是
+// 「看门狗自己崩了、Codex 还开着」以前**没人管**——要等下一次会话才有人补。
+// 2026-10-05 实测撞上：引擎 23:01:54 被外力打死，Fn 哑了 75 秒，直到手动跑
+// 了一次 session-start。这里补上这一段。
+//
+// 为什么「一次死亡只补一次」：补拉失败的原因都是持续性的配置问题（supervise.py
+// 不见了、根认不出来），每秒重试只会把 plugin.log 刷爆，不会让能力回来；而
+// 引擎还有另一条独立的复活路——任何一次 MCP 工具调用都会走 engine.Ensure。
+// 所以这里一次不成就等它活过来（清零）或等下一代 Codex，不硬撞。
 func (w *Watcher) watchApp(pid int) {
+	attempted := false // 这一轮「看门狗不在」补拉过没有；它一活过来就清零
 	for w.Alive(pid) {
 		if !w.wait(w.Every) {
 			return
 		}
+		if w.supervisorAlive() {
+			attempted = false
+			continue
+		}
+		if attempted {
+			continue
+		}
+		attempted = true
+		if stopped, stopPID := w.stopped(); stopped {
+			// 用户明确停过这一代：不许偷偷拉回来。
+			emit(w.Log, "sentinel_revive_blocked", "pid", pid, "stop_pid", stopPID)
+			continue
+		}
+		note, ok := w.Note()
+		if !ok || note.PID != pid {
+			continue
+		}
+		emit(w.Log, "sentinel_revive", "pid", pid)
+		w.Bind(pid, note.Image)
 	}
 	emit(w.Log, "sentinel_app_gone", "pid", pid)
 	w.last = 0
+}
+
+// supervisorAlive 问不出来就当「有人在守」：不补拉是安全的那一边。
+func (w *Watcher) supervisorAlive() bool {
+	if w.SupervisorAlive == nil {
+		return true
+	}
+	return w.SupervisorAlive()
+}
+
+func (w *Watcher) stopped() (bool, int) {
+	if w.Stopped == nil {
+		return false, 0
+	}
+	return w.Stopped()
 }
 
 // wait 睡一会儿；Stop 被关掉就返回 false（只给单测用；生产里 Stop 是 nil）。
@@ -592,6 +648,11 @@ func runForever(w *Watcher, out io.Writer) int {
 	}
 	defer windows.ReleaseMutex(handle)
 	defer windows.CloseHandle(handle)
+
+	// Run 键拉起的那次会带一个 Windows 新建的控制台窗口，藏了它（用户的终端不动）。
+	if hidden, reason := HideOwnConsole(); reason != "no_console" {
+		engine.PluginLog("sentinel_console", "hidden", hidden, "reason", reason)
+	}
 
 	if recordSelf() {
 		defer removeRecord()

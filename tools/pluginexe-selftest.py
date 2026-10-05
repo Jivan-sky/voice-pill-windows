@@ -496,6 +496,11 @@ def check_engine_absent(ck: Checker, client: MCPClient, engine: FakeEngine) -> N
 
 def check_hook_session_start(ck: Checker, env: dict, sandbox: str) -> None:
     """session-start 钩子：恒一行放行、写锚点纸条、不真拉看门狗"""
+    log = os.path.join(sandbox, "VoicePill", "plugin.log")
+    # 只认这一趟新追加的那一段：前面的 MCP 检查也在往同一个 plugin.log 里写
+    # （engine_root 早就有了），整文件扫等于把别人的话算到钩子头上。
+    before = os.path.getsize(log) if os.path.isfile(log) else 0
+
     code, out, err = run_hook(env, "session-start",
                               json.dumps({"session_id": "s1", "source": "startup"}))
     lines = out.decode("utf-8", "replace").splitlines()
@@ -511,15 +516,17 @@ def check_hook_session_start(ck: Checker, env: dict, sandbox: str) -> None:
            os.path.basename(note.get("image", "")).lower() in ("chatgpt.exe", "codex.exe"),
            note)
 
-    log = os.path.join(sandbox, "VoicePill", "plugin.log")
     text = ""
     if os.path.isfile(log):
-        with open(log, encoding="utf-8", errors="replace") as fh:
-            text = fh.read()
-    ck("session-start：日志里有 supervise_missing（临时根拉不起引擎）",
-       "supervise_missing" in text, text[-300:])
-    ck("session-start：日志里没有 supervisor_spawned（没真起看门狗）",
-       "supervisor_spawned" not in text, "")
+        with open(log, "rb") as fh:
+            fh.seek(before)
+            text = fh.read().decode("utf-8", "replace")
+    ck("session-start：锚点照写（anchor 那行在）",
+       "anchor pid=" in text, text[-300:])
+    ck("session-start：不碰看门狗（2026-10-05 起只写锚点）——engine_root /"
+       " supervise_missing / supervisor_spawned 一个都不许有",
+       ("engine_root" not in text and "supervise_missing" not in text
+        and "supervisor_spawned" not in text), text[-300:])
 
 
 # ---------- 哨兵（登录常驻；见 go/voicepill/internal/sentinel）----------
