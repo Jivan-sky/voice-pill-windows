@@ -107,7 +107,15 @@ type promptHookArgs struct {
 }
 
 // Serve 起 MCP stdio 服务端，直到 stdin 关闭。
+// warmUp 是给尺子换的口子：自测不该真去拉引擎。生产里就是 engine.WarmUp。
+var warmUp = engine.WarmUp
+
+// startWarmUp 把预热丢到后台。宿主一拉起这个进程就先做掉，别等 SessionStart
+// 钩子（实测早 16 秒），也别挡住 initialize——这条路上的 40 毫秒是交付指标。
+func startWarmUp() { go warmUp(engine.PluginLog) }
+
 func Serve(caller Caller) error {
+	startWarmUp()
 	server := mcp.NewServer(&mcp.Implementation{Name: ServerName, Version: ServerVersion}, nil)
 	register(server, caller)
 	return server.Run(context.Background(), &mcp.StdioTransport{})

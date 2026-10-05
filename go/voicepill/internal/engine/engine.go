@@ -314,6 +314,38 @@ func EnsureSupervisor(root string, log Logger) bool {
 	return true
 }
 
+// ---------- 预热（宿主刚把插件拉起来的那一刻）----------
+
+// WarmUp 的口子。默认都是真实现；自测换掉它们，别去碰真父链、真看门狗。
+var (
+	warmAnchor = WriteAnchor
+	warmRoot   = Root
+	warmEnsure = EnsureSupervisor
+)
+
+// WarmUp 在「宿主刚把插件拉起来」这一刻把引擎预热上：先写锚点，再幂等拉看门狗。
+//
+// 为什么挂这儿：宿主能叫起插件代码的最早时机就是这个进程启动（实测 21:59:14，
+// 比 SessionStart 钩子 21:59:30 早 16 秒），而且钩子没通过 review/trust 时钩子
+// 那一路是哑的，这一路仍然在。
+//
+// 纪律与钩子一致：纸条与看门狗都是幂等的，所以重复叫、引擎已经在跑、纸条已经
+// 写着同一个 pid，都只是多记一行日志。**调用方必须丢到后台协程里**——MCP 的
+// initialize 要保持在毫秒级，而这里要碰磁盘和互斥体。
+func WarmUp(log Logger) {
+	defer func() {
+		if r := recover(); r != nil {
+			emit(log, "warmup_error", "error", fmt.Sprint(r))
+		}
+	}()
+	warmAnchor(log)
+	root := warmRoot(log)
+	if root == "" {
+		return
+	}
+	warmEnsure(root, log)
+}
+
 // ---------- 等就绪 ----------
 
 // Prober 探一次控制面：返回 (data, nil) 表示引擎已经在应答。

@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"voicepill/internal/engine"
 )
 
 type scriptedCaller struct {
@@ -490,4 +492,22 @@ func names(tools []*mcp.Tool) []string {
 		out = append(out, tool.Name)
 	}
 	return out
+}
+
+// ---------- 预热（宿主刚把插件拉起来那一刻）----------
+
+// 尺子只验「有没有把预热丢出去」，预热本身归 engine 包的尺子管。
+func TestStartWarmUpRunsInBackground(t *testing.T) {
+	old := warmUp
+	done := make(chan struct{})
+	warmUp = func(engine.Logger) { close(done) }
+	defer func() { warmUp = old }()
+
+	startWarmUp()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("startWarmUp 没把预热跑起来")
+	}
 }

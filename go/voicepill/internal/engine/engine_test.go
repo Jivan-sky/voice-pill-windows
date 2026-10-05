@@ -553,3 +553,61 @@ func TestLiveAnchor(t *testing.T) {
 	}
 	t.Logf("对拍一致：pid=%d image=%s", pid, image)
 }
+
+// ---------- 预热（宿主刚把插件拉起来那一刻）----------
+
+func TestWarmUpAnchorThenEnsure(t *testing.T) {
+	oldAnchor, oldRoot, oldEnsure := warmAnchor, warmRoot, warmEnsure
+	defer func() { warmAnchor, warmRoot, warmEnsure = oldAnchor, oldRoot, oldEnsure }()
+	var calls []string
+	warmAnchor = func(Logger) (int, string, bool) { calls = append(calls, "anchor"); return 7, "chatgpt.exe", true }
+	warmRoot = func(Logger) string { calls = append(calls, "root"); return "D:\\repo" }
+	warmEnsure = func(root string, _ Logger) bool { calls = append(calls, "ensure:"+root); return true }
+
+	WarmUp(nil)
+
+	want := []string{"anchor", "root", "ensure:D:\\repo"}
+	if len(calls) != len(want) {
+		t.Fatalf("调用顺序不对：%v，想要 %v", calls, want)
+	}
+	for i := range want {
+		if calls[i] != want[i] {
+			t.Fatalf("第 %d 步是 %q，想要 %q（全部：%v）", i, calls[i], want[i], calls)
+		}
+	}
+}
+
+func TestWarmUpNoRootSkipsEnsure(t *testing.T) {
+	oldAnchor, oldRoot, oldEnsure := warmAnchor, warmRoot, warmEnsure
+	defer func() { warmAnchor, warmRoot, warmEnsure = oldAnchor, oldRoot, oldEnsure }()
+	var calls []string
+	warmAnchor = func(Logger) (int, string, bool) { calls = append(calls, "anchor"); return 0, "", false }
+	warmRoot = func(Logger) string { calls = append(calls, "root"); return "" }
+	warmEnsure = func(string, Logger) bool { calls = append(calls, "ensure"); return false }
+
+	WarmUp(nil)
+
+	if len(calls) != 2 || calls[0] != "anchor" || calls[1] != "root" {
+		t.Fatalf("认不出根时不该去拉看门狗：%v", calls)
+	}
+}
+
+// 真实现跑一遍：假根里没有 src 下的 supervise.py，只该记一条 supervise_missing，绝不拉东西。
+func TestWarmUpWithFakeRootDoesNotSpawn(t *testing.T) {
+	t.Setenv("LOCALAPPDATA", t.TempDir())
+	t.Setenv(SupervisorMutexEnv, uniqueMutexName(t))
+	t.Setenv(EngineRootEnv, t.TempDir())
+	c := &capture{}
+
+	WarmUp(c.log)
+
+	if !c.has("engine_root source=env") {
+		t.Fatalf("没记根从哪来：%v", c.lines)
+	}
+	if !c.has("supervise_missing") {
+		t.Fatalf("假根里应当只剩 supervise_missing：%v", c.lines)
+	}
+	if c.has("supervisor_spawned") {
+		t.Fatalf("假根里绝不该拉看门狗：%v", c.lines)
+	}
+}
