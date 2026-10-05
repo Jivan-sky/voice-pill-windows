@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -374,4 +375,27 @@ func countOf(events []string, want string) int {
 		}
 	}
 	return n
+}
+
+// 纸条上的 exe 必须先归一到真实路径：插件是目录联接装的，不归一 --status 会说
+// 「没在跑」（实测），--stop 也会拒绝动手。
+func TestRecordSelfNormalizesExePath(t *testing.T) {
+	t.Setenv("LOCALAPPDATA", t.TempDir())
+	old := resolveExePath
+	resolveExePath = func(string) string { return "D:\\repo\\plugins\\voice-pill\\voicepill.exe" }
+	defer func() { resolveExePath = old }()
+
+	if !recordSelf() {
+		t.Fatal("记账失败")
+	}
+	rec, ok := ReadRecord()
+	if !ok {
+		t.Fatal("读不回来")
+	}
+	if rec.Exe != "D:\\repo\\plugins\\voice-pill\\voicepill.exe" {
+		t.Fatalf("纸条上的 exe 没归一：%q", rec.Exe)
+	}
+	if rec.PID != os.Getpid() {
+		t.Fatalf("纸条上的 pid 不是自己：%d", rec.PID)
+	}
 }

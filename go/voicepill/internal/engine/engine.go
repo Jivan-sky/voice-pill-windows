@@ -191,6 +191,15 @@ func finalPathName(path string) (string, error) {
 	}
 }
 
+// FinalPath 拿真实路径（走目录联接时返回联接背后的位置），并剥掉 \\?\ 前缀。
+// 拿不到就原样返回：归一失败不该把功能一起带走。
+func FinalPath(path string) string {
+	if real, err := finalPathName(path); err == nil {
+		return real
+	}
+	return path
+}
+
 func stripLongPrefix(p string) string {
 	switch {
 	case strings.HasPrefix(p, `\\?\UNC\`):

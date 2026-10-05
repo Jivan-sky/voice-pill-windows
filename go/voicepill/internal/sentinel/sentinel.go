@@ -372,6 +372,20 @@ func ReadRecord() (Record, bool) {
 	return rec, true
 }
 
+// resolveExePath 把 exe 归一到真实路径再记纸条：插件是用目录联接装的，
+// os.Executable() 给的是联接那一边，而 ProcessImage() 给的是联接背后的真实位置。
+// 不归一就会「明明在跑却说没在跑」（实测），连 --stop 都会拒绝动手。自测换掉它。
+var resolveExePath = engine.FinalPath
+
+// recordSelf 写下「我是谁、我在哪儿」——先把路径归一，再落盘。
+func recordSelf() bool {
+	exe, err := exePath()
+	if err != nil {
+		return false
+	}
+	return writeRecord(resolveExePath(exe))
+}
+
 func writeRecord(exe string) bool {
 	path := RecordPath()
 	if err := os.MkdirAll(filepath.Dir(path), 0o777); err != nil {
@@ -579,8 +593,7 @@ func runForever(w *Watcher, out io.Writer) int {
 	defer windows.ReleaseMutex(handle)
 	defer windows.CloseHandle(handle)
 
-	if exe, err := exePath(); err == nil {
-		writeRecord(exe)
+	if recordSelf() {
 		defer removeRecord()
 	}
 	fmt.Fprintf(out, "哨兵起来了：每 %.1f 秒扫一次 Codex。日志：%s\n", w.Poll.Seconds(), engine.LogPath())
