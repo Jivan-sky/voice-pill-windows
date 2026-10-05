@@ -39,8 +39,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 INSTALL_PY = os.path.join(ROOT, "plugins", "claude-code", "install.py")
 
 SPEC = "voice-pill@voice-pill"
-# 故意带 `&`：这正是本仓库路径的形状，也是那个坑的触发条件。
-AMP_PATH = r"D:\Own_tools&skills\voice-pill-windows-contract"
+# 故意带 `&`：这是那个坑的触发条件。路径是编的，不指向任何真目录——
+# 尺子只认「会被劈开」这个形状，跟谁家盘符无关。
+AMP_PATH = r"C:\tools\a&b\voice-pill"
 
 
 def load_install():
@@ -138,7 +139,8 @@ def check_ampersand(ck, M, tmp) -> None:
                           encoding="utf-8", errors="replace", timeout=60)
     got = M._parse_json_output(proc.stdout)
     ck("反面：不加引号时路径确实被劈开（尺子能证伪）",
-       isinstance(got, list) and AMP_PATH not in got and "D:\\Own_tools" in got,
+       isinstance(got, list) and AMP_PATH not in got
+       and AMP_PATH.split("&")[0] in got,
        str(got))
 
     # 正面：经 _run_claude 走一遍，每个参数都原样到达。
