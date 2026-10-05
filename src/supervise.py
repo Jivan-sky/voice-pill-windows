@@ -58,6 +58,30 @@ WATCH_POLL_SECONDS = 1.0       # 盯子进程 / 看纸条的间隔
 QUIT_GRACE_SECONDS = 180.0     # 请它收摊后最多等多久（最长录音 120 秒 + 转写余量）
 FORCE_GRACE_SECONDS = 10.0     # terminate 之后再等多久，然后才 kill
 
+# 驻留认出「已经有一个实例在跑」时的退出码（见 src/main.py 那一段）。对看门狗来说
+# 这不是崩溃，是「有人比我先到」——重试没有意义。
+EXIT_ALREADY_RUNNING = 3
+
+
+def resident_alive(resident) -> bool:
+    """已经有一个驻留实例在服务没有——探它那把单实例锁。问不出来就当没有。
+
+    探的是"**有没有人**拿着"，不是"我拿没拿到"：看门狗和驻留是两个进程，锁在驻留
+    手上，"自己的持锁状态"永远问不出东西来。2026-10-06 实测踩到：写成了
+    resident.held()，而 held 是 property —— 直接 TypeError，看门狗一起来就崩，
+    连驻留都拉不起来了。InstanceLock.exists 用 OpenMutex 纯探测，不抢所有权。
+
+    问不出来时返回 False 是有意选的方向：看门狗照常拉一只驻留，那一只会自己认出
+    "已经有一个在跑"并以 code 3 退出，本只随即收摊（见 main 里那一档）。代价是白起
+    一次进程，换来的是**绝不会**因为探错而让能力没人管。
+    """
+    if resident is None:
+        return False
+    try:
+        return resident.exists()
+    except OSError:
+        return False
+
 
 def decide(rapid_failures: int) -> tuple:
     """纯逻辑，便于自测：返回 (动作, 延迟秒)。动作是 restart | give_up。"""
@@ -149,16 +173,25 @@ def _force_stop(proc) -> int:
         return proc.wait()
 
 
-def _wait_child(proc, watcher) -> tuple:
-    """盯着子进程，顺便盯着锚点。返回 (退出码, 是不是因为锚点没了才收的摊)。"""
+def _wait_child(proc, watcher, resident=None) -> tuple:
+    """盯着子进程，顺便盯着锚点。返回 (退出码, 是不是因为锚点没了才收的摊)。
+
+    `proc=None` 表示这一轮本只**没有**子进程：已经有一只驻留在服务，本只只接管看守
+    （见 main）。那时拿驻留锁当替身——锁一松就是它走了。
+    """
     quit_at = None
     while True:
-        try:
-            # 已经因为锚点没了在收摊，那这次退出就得如实报出来——否则调用方
-            # 只看到「code 0，正常退出」，会漏掉「是被 Codex 带走的」这件事。
-            return (proc.wait(timeout=WATCH_POLL_SECONDS), quit_at is not None)
-        except subprocess.TimeoutExpired:
-            pass
+        if proc is None:
+            if not resident_alive(resident):
+                return (0, quit_at is not None)
+            time.sleep(WATCH_POLL_SECONDS)
+        else:
+            try:
+                # 已经因为锚点没了在收摊，那这次退出就得如实报出来——否则调用方
+                # 只看到「code 0，正常退出」，会漏掉「是被 Codex 带走的」这件事。
+                return (proc.wait(timeout=WATCH_POLL_SECONDS), quit_at is not None)
+            except subprocess.TimeoutExpired:
+                pass
         if quit_at is None:
             watcher.poll()
             if not watcher.gone():
@@ -171,6 +204,11 @@ def _wait_child(proc, watcher) -> tuple:
             continue
         if time.monotonic() < quit_at:
             continue
+        if proc is None:
+            # 接管来的那只不是自己的孩子，没有句柄可强杀；如实收摊，别赖着。
+            print("[看门狗] 接管的那只驻留等了 %.0f 秒还没收完，本只退出。"
+                  % QUIT_GRACE_SECONDS, file=sys.stderr)
+            return (0, True)
         # 到这儿多半是正卡在录音/转写里。宽限期已经给了，别再无限等。
         print("[看门狗] 等了 %.0f 秒还没收完（多半卡在录音或转写），强制结束。"
               % QUIT_GRACE_SECONDS, file=sys.stderr)
@@ -198,39 +236,66 @@ def main() -> int:
     code = 0
     try:
         rapid = 0
+        # 留不留那张停用纸条（哨兵据此判断"这一代 Codex 用户明确停过，不许偷偷拉回来"）。
+        # **只有"用户明确要停"那一档才置位**——就是子进程正常退出（code 0，来自
+        # `--stop` 或 Ctrl+C）那一次。2026-10-06 实测的坑：以前是"除了 code 3 那一档
+        # 全都写"，于是**连崩到放弃**也写了一张。哨兵读到它就不敢补拉，用户修好配置
+        # 之后按 Fn 依然没反应，一直哑到下一次 Codex 会话——而那一档恰恰最该重试。
+        user_stopped = False
+        resident = single_instance.InstanceLock(single_instance.MUTEX_NAME)
         while True:
             t0 = time.monotonic()
-            try:
-                # 必须带 CREATE_NO_WINDOW。看门狗自己是被 DETACHED 拉起来的（没有
-                # 控制台），不显式关掉的话 Windows 只能给子进程**新建一个控制台**——
-                # 那是一个看得见的窗口。2026-10-06 实测（照这条链复刻，只差 flags）：
-                # 不传 flags 时新窗口 vis=True，传 CREATE_NO_WINDOW 时 vis=False。
-                # 而关掉那个窗口会让驻留收到 CTRL_CLOSE_EVENT、以 0xC000013A 退出，
-                # 看门狗再拉一个、窗口又冒出来——用户看到的「一直弹窗」就是这个环。
-                # 另：venv 里的 pythonw.exe 与 python.exe 逐字节相同（uv 造的跳板，
-                # 见 _force_stop 的注释），它拉起的就是控制台的 python.exe，所以这条
-                # 路上「pythonw = 无窗口」这个假设本来也不成立。
-                proc = subprocess.Popen(
-                    child_argv(),
-                    cwd=config.project_root(),
-                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                )
-            except OSError as exc:
-                print("[看门狗] 拉不起子进程：%s" % exc, file=sys.stderr)
-                return 1
+            if resident_alive(resident):
+                # 已经有一只驻留在服务：**接管看守**，不再另拉一只。拉了它也会以
+                # code 3（已有实例）退出去，等于每轮白起一个进程（2026-10-06 实测：
+                # 六秒里连起三只，每只都冒一次窗口）。盯锚点这件事一样做到：它一退，
+                # 下面那段照样请那只驻留收摊。
+                print("[看门狗] 已经有一个驻留实例在服务，本只接管看守。")
+                proc = None
+            else:
+                try:
+                    # 必须带 CREATE_NO_WINDOW。看门狗自己是被 DETACHED 拉起来的（没有
+                    # 控制台），不显式关掉的话 Windows 只能给子进程**新建一个控制台**——
+                    # 那是一个看得见的窗口。2026-10-06 实测（照这条链复刻，只差 flags）：
+                    # 不传 flags 时新窗口 vis=True，传 CREATE_NO_WINDOW 时 vis=False。
+                    # 而关掉那个窗口会让驻留收到 CTRL_CLOSE_EVENT、以 0xC000013A 退出，
+                    # 看门狗再拉一个、窗口又冒出来——用户看到的「一直弹窗」就是这个环。
+                    # 另：venv 里的 pythonw.exe 与 python.exe 逐字节相同（uv 造的跳板，
+                    # 见 _force_stop 的注释），它拉起的就是控制台的 python.exe，所以这条
+                    # 路上「pythonw = 无窗口」这个假设本来也不成立。
+                    proc = subprocess.Popen(
+                        child_argv(),
+                        cwd=config.project_root(),
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                    )
+                except OSError as exc:
+                    print("[看门狗] 拉不起子进程：%s" % exc, file=sys.stderr)
+                    return 1
             # KeyboardInterrupt 不该把子进程丢下不管
             try:
-                code, anchored_out = _wait_child(proc, watcher)
+                code, anchored_out = _wait_child(proc, watcher, resident)
             except KeyboardInterrupt:
-                code = proc.wait()
+                code = proc.wait() if proc is not None else 0
                 anchored_out = False
             alive = time.monotonic() - t0
 
             if anchored_out:
                 print("[看门狗] Codex 退了，一起退。")
                 return 0
+            if proc is None:
+                # 接管的那只走了（锁松了）。本只不再自作主张往下拉——留给外面那条
+                # 路去决定（工具调用 / 预热 / 哨兵），免得跟 `--stop` 对着干。
+                print("[看门狗] 接管的那只驻留走了，一起退。")
+                return 0
             if code == 0:
                 print("[看门狗] 子进程正常退出（code 0），一起退。")
+                user_stopped = True
+                return 0
+            if code == EXIT_ALREADY_RUNNING:
+                # 有一只比我先到的驻留在跑（并发拉起的竞态）。这不是崩溃，重试没有
+                # 意义：主动退出，让跑到前面的那只服务。**不留停用纸条**——那张纸的
+                # 意思是「用户明确停过」，写错了哨兵就不敢补拉（见 finally 的注释）。
+                print("[看门狗] 已经有一个驻留实例抢先跑起来了（code 3），本只退出。")
                 return 0
 
             rapid = rapid + 1 if alive < RAPID_WINDOW else 1
@@ -243,10 +308,18 @@ def main() -> int:
                 return 1
             time.sleep(delay)
     finally:
-        # 自己决定收摊的时候留一张停用纸条：哨兵靠它把「用户的决定」和「被打死」
-        # 分开。被打死走不到这里——纸条不在，哨兵才敢补拉（见 engine.StoppedByUser）。
+        # 只有"用户明确要停"（子进程 code 0）那一档留停用纸条：哨兵靠它把「用户的
+        # 决定」和「崩了 / 被外力打死」分开——纸条在，哨兵就不补拉（见
+        # engine.StoppedByUser 的两张纸先后判据）。
+        #
+        # 为什么别的下场都不留：**留错比不留危险得多**。看门狗崩了、被人杀了、
+        # 连崩到放弃、认出"已经有一只驻留在跑"——这些都不是用户的决定，写一张纸
+        # 就够让哨兵从此不敢补拉，用户按 Fn 没反应却查不出原因（2026-10-06 实测
+        # 就这么哑过一轮）。不留最多多补拉一次，代价只是多跑一次 EnsureSupervisor。
+        #
         # pid 要在 close() 之前取：close() 一断锚点，pid 就归 0 了。
-        anchor.write_stop_note(watcher.pid())
+        if user_stopped:
+            anchor.write_stop_note(watcher.pid())
         watcher.close()
         lock.release()
 

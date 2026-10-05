@@ -34,11 +34,14 @@ QUIT_EVENT_NAME = r"Local\VoicePill.Windows.Quit"
 SUPERVISOR_MUTEX_NAME = r"Local\VoicePill.Windows.Supervisor"
 
 ERROR_ALREADY_EXISTS = 183
+SYNCHRONIZE = 0x00100000        # OpenMutexW 要的访问权：够"看一眼"就行，不含修改
 WAIT_OBJECT_0 = 0x00000000
 
 kernel32.CreateMutexW.restype = wintypes.HANDLE
 kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, wintypes.BOOL,
                                   wintypes.LPCWSTR]
+kernel32.OpenMutexW.restype = wintypes.HANDLE
+kernel32.OpenMutexW.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR]
 kernel32.CreateEventW.restype = wintypes.HANDLE
 kernel32.CreateEventW.argtypes = [ctypes.c_void_p, wintypes.BOOL,
                                   wintypes.BOOL, wintypes.LPCWSTR]
@@ -75,6 +78,25 @@ class InstanceLock:
     @property
     def held(self) -> bool:
         return self._handle is not None
+
+    def exists(self) -> bool:
+        """这把锁此刻**有没有人在拿**（别人也算）。纯探测：只 OpenMutex，不抢所有权。
+
+        为什么不能用 held 判：held 说的是「我自己拿到没拿到」，问的是自己；这里要问
+        的是「别人正在服务吗」。
+
+        为什么不能用 acquire() 判：那把没人在的时候会**把锁拿过来**——探一下就顺手
+        占住，真正该驻留的那只反而会以「已有实例」退出去。看门狗每轮都要探一次
+        （见 supervise.py 的 resident_alive），必须挑不产生副作用的那条路。
+
+        名字下没有任何对象时返回 False（对象随最后一个句柄关闭而销毁，所以「没人拿」
+        和「对象不在」是同一件事）。
+        """
+        handle = kernel32.OpenMutexW(SYNCHRONIZE, False, self._name)
+        if not handle:
+            return False
+        kernel32.CloseHandle(handle)
+        return True
 
     def release(self) -> None:
         if self._handle is None:

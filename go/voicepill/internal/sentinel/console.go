@@ -10,16 +10,27 @@ import (
 //
 // 为什么需要
 // ----------
-// exe 是 WINDOWS_CUI 子系统（bin/voicepill.exe 的 PE 头 Subsystem=3）。从
+// exe 曾经是 WINDOWS_CUI 子系统（PE 头 Subsystem=3）。从
 // HKCU\...\Run 拉起时，Windows 会给它**开一个自己的控制台窗口**，而哨兵是
 // 常驻的——那个黑窗口会一直杵在桌面上，每次登录都来一个。
 //
-// 为什么不干脆把 PE 头改成 GUI 子系统
+// 后来还是把 PE 头改成了 GUI 子系统（2026-10-06）
 // ----------------------------------
-// 能根治，但会改掉 exe 对**所有**调用方的行为，代价最大的一处是三个钩子：
-// 钩子是被 hook*.cmd 拉起来的，而 cmd.exe 对 GUI 子系统程序**不等待**——.cmd
-// 会立刻返回，宿主读到的 stdout 是空的，钩子的 {"continue":true} 就丢了。
-// 为了一个登录窗口去动这条已经在工作的路，不值。
+// 原来这里的结论是"不改"，理由是"cmd.exe 对 GUI 子系统程序**不等待**——.cmd 会
+// 立刻返回，宿主读到的 stdout 是空的，钩子的 {"continue":true} 就丢了"。实测把这条
+// 推翻了。照钩子那条链复刻量了一遍（cmd /c hook.cmd + 全管道 + CREATE_NO_WINDOW，
+// cui / gui 两份同源码构建，被测程序自己睡 2 秒）：
+//
+//	cmd /c hook-cui.cmd   elapsed=2.08s  exit=7  stdout='probe-stdout-ok'  stdin 照收
+//	cmd /c hook-gui.cmd   elapsed=2.09s  exit=7  stdout='probe-stdout-ok'  stdin 照收
+//
+// 也就是 cmd **会等**，stdout / stdin / 退出码三样都通（钩子的 JSON 载荷走 stdin）。
+// 另外 80 项 exe 自测（tools/pluginexe-selftest.py）对 GUI 构建全过，用户在终端里
+// 直敲 `voicepill.exe sentinel --status` 也照常出字、退出码正常。
+//
+// 所以判据换成更硬的一句：**别让 Windows 建这个控制台**。GUI 子系统下
+// GetConsoleWindow() 恒为 0，连"先建后藏"那一闪也没了。构建带 `-H windowsgui`，
+// 见 tools/build-plugin-exe.ps1。
 //
 // 判据：只藏「独占的那个」控制台
 // -----------------------------
@@ -29,8 +40,9 @@ import (
 //
 // 靠 GetConsoleProcessList 数挂在上头的进程数，只有 1 个才动手。
 //
-// 代价：窗口是先建后藏，登录时会闪一下（毫秒级）。要彻底不闪只能改 GUI
-// 子系统，见上。
+// 代价：窗口是先建后藏，登录时会闪一下（毫秒级）。GUI 子系统构建下这条路根本
+// 走不到（没有控制台可藏，回的是 "no_console"）——留着它是给"有人不带
+// -H windowsgui 编了一次"的 CUI 构建兜底，判据仍然成立，见上。
 var (
 	procGetConsoleWindow      = windows.NewLazySystemDLL("kernel32.dll").NewProc("GetConsoleWindow")
 	procGetConsoleProcessList = windows.NewLazySystemDLL("kernel32.dll").NewProc("GetConsoleProcessList")
