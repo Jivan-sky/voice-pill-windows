@@ -201,8 +201,20 @@ def main() -> int:
         while True:
             t0 = time.monotonic()
             try:
-                proc = subprocess.Popen(child_argv(),
-                                        cwd=config.project_root())
+                # 必须带 CREATE_NO_WINDOW。看门狗自己是被 DETACHED 拉起来的（没有
+                # 控制台），不显式关掉的话 Windows 只能给子进程**新建一个控制台**——
+                # 那是一个看得见的窗口。2026-10-06 实测（照这条链复刻，只差 flags）：
+                # 不传 flags 时新窗口 vis=True，传 CREATE_NO_WINDOW 时 vis=False。
+                # 而关掉那个窗口会让驻留收到 CTRL_CLOSE_EVENT、以 0xC000013A 退出，
+                # 看门狗再拉一个、窗口又冒出来——用户看到的「一直弹窗」就是这个环。
+                # 另：venv 里的 pythonw.exe 与 python.exe 逐字节相同（uv 造的跳板，
+                # 见 _force_stop 的注释），它拉起的就是控制台的 python.exe，所以这条
+                # 路上「pythonw = 无窗口」这个假设本来也不成立。
+                proc = subprocess.Popen(
+                    child_argv(),
+                    cwd=config.project_root(),
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
             except OSError as exc:
                 print("[看门狗] 拉不起子进程：%s" % exc, file=sys.stderr)
                 return 1
