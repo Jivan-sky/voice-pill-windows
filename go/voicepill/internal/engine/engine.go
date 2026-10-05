@@ -353,7 +353,16 @@ func Ensure(prober Prober, log Logger) (json.RawMessage, error) {
 // 与 Python anchor.find_anchor() 同一套判据：父链最多 16 层，认
 // codex.exe / chatgpt.exe（大小写不敏感），取最外层那个。
 func FindAnchor() (pid int, image string, ok bool) {
-	return findAnchor(os.Getpid(), processParent, processImage)
+	return FindAnchorFrom(os.Getpid())
+}
+
+// FindAnchorFrom 从**任意**进程出发往上找最外层那个 Codex。
+//
+// 为什么要能换起点：钩子是 Codex 的子孙，走自己的父链天经地义；哨兵不是
+// （它由登录拉起，父链里没有 Codex），只能先扫出候选进程，再各自往上认。
+// 判据一字不改，仍是 findAnchor 那一套。
+func FindAnchorFrom(start int) (int, string, bool) {
+	return findAnchor(start, processParent, processImage)
 }
 
 func findAnchor(start int, parent func(int) int, image func(int) string) (int, string, bool) {
@@ -385,6 +394,9 @@ func findAnchor(start int, parent func(int) int, image func(int) string) (int, s
 	outermost := matches[len(matches)-1]
 	return outermost.pid, outermost.image, true
 }
+
+// IsCodexImage 与内部判据同一把尺子（按文件名比，大小写不敏感）。
+func IsCodexImage(path string) bool { return isCodexImage(path) }
 
 func isCodexImage(path string) bool {
 	name := filepath.Base(path)
@@ -433,6 +445,9 @@ func processParent(pid int) int {
 	}
 	return int(info.InheritedFromUniqueProcessId)
 }
+
+// ProcessImage 是按 pid 取映像路径的对外口（判活时核「还是不是那个人」用）。
+func ProcessImage(pid int) string { return processImage(pid) }
 
 // processImage 是进程的完整映像路径。拿不到返回空串（对齐 Python）。
 func processImage(pid int) string {

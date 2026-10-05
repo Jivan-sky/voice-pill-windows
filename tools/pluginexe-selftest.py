@@ -522,6 +522,146 @@ def check_hook_session_start(ck: Checker, env: dict, sandbox: str) -> None:
        "supervisor_spawned" not in text, "")
 
 
+# ---------- 哨兵（登录常驻；见 go/voicepill/internal/sentinel）----------
+
+# 三个只给自测用的环境变量名，与 Go 侧 internal/sentinel 的常量一字不差。
+SENTINEL_FAKE_APP_ENV = "VOICEPILL_SENTINEL_FAKE_APP"
+SENTINEL_RUN_KEY_ENV = "VOICEPILL_SENTINEL_RUN_KEY"
+SENTINEL_MUTEX_ENV = "VOICEPILL_SENTINEL_MUTEX"
+
+
+def _sentinel_env(sandbox: str, fake_app: str) -> dict:
+    """哨兵自测的环境：沙箱 + 临时引擎根 + 专属管道/互斥体/注册表子键。
+
+    假的只有「进程表长什么样」（SENTINEL_FAKE_APP_ENV）——它必须在，否则尺子就
+    去扫真系统了，结果随人而变。其余全是真的：真 exe、真纸条落盘、真注册表调用
+    （落点换到自己的测试子键里）。
+    """
+    env = dict(os.environ)
+    env["LOCALAPPDATA"] = sandbox
+    env["VOICEPILL_ENGINE_ROOT"] = os.path.join(sandbox, "no-such-root")
+    stamp = "%d-%d" % (os.getpid(), int(time.time() * 1000))
+    env["VOICEPILL_SUPERVISOR_MUTEX"] = r"Local\VoicePillTest-sentinel-%s" % stamp
+    env[SENTINEL_MUTEX_ENV] = r"Local\VoicePillTest-sentinel-self-%s" % stamp
+    env[SENTINEL_RUN_KEY_ENV] = r"Software\VoicePill\SentinelSelftest-%d" % os.getpid()
+    env[SENTINEL_FAKE_APP_ENV] = fake_app
+    env["PYTHONIOENCODING"] = "utf-8"
+    return env
+
+
+def _run_sentinel(env: dict, *args: str, timeout: float = 30.0):
+    proc = subprocess.Popen([EXE, "sentinel", *args], stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+    out, err = proc.communicate(timeout=timeout)
+    return proc.returncode, out.decode("utf-8", "replace"), err.decode("utf-8", "replace")
+
+
+def check_sentinel(ck: Checker) -> str:
+    """哨兵：认下 Codex（假进程表）、写锚点、不真拉看门狗；第二趟不许重复拉。"""
+    sandbox = tempfile.mkdtemp(prefix="vp-sentinel-")
+    env = _sentinel_env(sandbox, "4242:chatgpt.exe")
+    log_path = os.path.join(sandbox, "VoicePill", "plugin.log")
+    anchor_path = os.path.join(sandbox, "VoicePill", "anchor.json")
+
+    def log_text() -> str:
+        if not os.path.isfile(log_path):
+            return ""
+        with open(log_path, encoding="utf-8", errors="replace") as fh:
+            return fh.read()
+
+    code, out, err = _run_sentinel(env, "--once")
+    ck("sentinel --once：退出码 0", code == 0, err)
+    ck("sentinel --once：说出认下了谁", "pid=4242" in out, out)
+
+    if ck("sentinel --once：沙箱里出现锚点纸条", os.path.isfile(anchor_path), anchor_path):
+        with open(anchor_path, encoding="utf-8") as fh:
+            note = json.load(fh)
+        ck("sentinel --once：纸条认的就是那个假 Codex",
+           note.get("pid") == 4242
+           and os.path.basename(note.get("image", "")).lower() == "chatgpt.exe", note)
+
+    text = log_text()
+    ck("sentinel：日志里有 sentinel_app / sentinel_bound",
+       "sentinel_app" in text and "sentinel_bound" in text, text[-300:])
+    ck("sentinel：临时根拉不起引擎，只剩 supervise_missing",
+       "supervise_missing" in text and "supervisor_spawned" not in text, text[-300:])
+
+    code, out, err = _run_sentinel(env, "--once")
+    ck("sentinel --once（第二趟）：退出码 0", code == 0, err)
+    ck("sentinel --once（第二趟）：说清楚没动", "不动" in out, out)
+    text = log_text()
+    ck("sentinel：第二趟记的是 note_kept，没有第二次绑定",
+       text.count("sentinel_bound") == 1 and "sentinel_note_kept" in text,
+       "bound=%d" % text.count("sentinel_bound"))
+
+    quiet = _sentinel_env(sandbox, " ")
+    code, out, err = _run_sentinel(quiet, "--once")
+    ck("sentinel --once（没有 Codex）：退出码 0 且说没找到",
+       code == 0 and "没找到" in out, out + err)
+
+    check_sentinel_autostart(ck, env)
+    check_sentinel_resident(ck, env, sandbox)
+    return sandbox
+
+
+def check_sentinel_autostart(ck: Checker, env: dict) -> None:
+    """登录自启那一行：只在自己的测试子键里写、读、删，真 Run 键一个字节不碰。"""
+    key = "HKCU\\" + env[SENTINEL_RUN_KEY_ENV]
+    code, out, err = _run_sentinel(env, "--install")
+    ck("sentinel --install：退出码 0 且说清了登记到哪",
+       code == 0 and "已登记登录自启" in out, out + err)
+    ck("sentinel --install：登记的是带引号的 exe + sentinel 子命令",
+       'voicepill.exe" sentinel' in out, out)
+
+    code, out, err = _run_sentinel(env, "--status")
+    ck("sentinel --status：说已登记", code == 0 and "已登记" in out, out + err)
+
+    code, out, err = _run_sentinel(env, "--uninstall")
+    ck("sentinel --uninstall：退出码 0", code == 0 and "已删掉" in out, out + err)
+    code, out, err = _run_sentinel(env, "--status")
+    ck("sentinel --status：删完说没登记", "没登记" in out, out + err)
+
+    # 收尾：把测试子键整个删掉，并确认真没了（尺子自己不留垃圾）。
+    subprocess.run(["reg", "delete", key, "/f"], capture_output=True, text=True)
+    gone = subprocess.run(["reg", "query", key], capture_output=True, text=True)
+    ck("sentinel：测试用的注册表子键已清干净", gone.returncode != 0, gone.stdout + gone.stderr)
+
+
+def check_sentinel_resident(ck: Checker, env: dict, sandbox: str) -> None:
+    """常驻那一档：起一个真哨兵，核纸条与日志，然后请它退出。
+
+    假进程表里那个号在假世界里一直活着，所以它会老老实实待在「盯着 Codex」这一
+    档——正好是生产里最常待的那一档。
+    """
+    record = os.path.join(sandbox, "VoicePill", "sentinel.json")
+    log_path = os.path.join(sandbox, "VoicePill", "plugin.log")
+
+    def log_text() -> str:
+        if not os.path.isfile(log_path):
+            return ""
+        with open(log_path, encoding="utf-8", errors="replace") as fh:
+            return fh.read()
+
+    proc = subprocess.Popen([EXE, "sentinel"], stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+    try:
+        ck("sentinel（常驻）：写下哨兵纸条", _wait(lambda: os.path.isfile(record), 5.0), record)
+        if os.path.isfile(record):
+            with open(record, encoding="utf-8") as fh:
+                rec = json.load(fh)
+            ck("sentinel（常驻）：纸条上的 pid 就是它自己", rec.get("pid") == proc.pid, rec)
+        # 纸条与日志是两笔写，中间有肉眼看不见的缝——等它，不抢跑。
+        ck("sentinel（常驻）：日志里有 sentinel_start",
+           _wait(lambda: "sentinel_start" in log_text(), 5.0), log_text()[-200:])
+    finally:
+        proc.terminate()
+        try:
+            proc.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+
+
 def run_hook(env: dict, kind: str, payload_text: str, timeout: float = 30.0):
     """跑一次命令行钩子：stdin 喂完就关（钩子会读到 EOF 再答，没有 stdio 那个坑）。"""
     proc = subprocess.Popen([EXE, kind], stdin=subprocess.PIPE,
@@ -672,6 +812,9 @@ def main() -> int:
 
         print("\n[%s]" % "钩子 session-start（引擎不在，也不许真拉）")
         check_hook_session_start(ck, env, sandbox)
+
+        print("\n[%s]" % "哨兵 sentinel（假进程表 + 真 exe + 自己的注册表子键）")
+        check_sentinel(ck)
     finally:
         code, stderr = client.close()
         engine.stop()

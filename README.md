@@ -35,6 +35,7 @@ Voice Pill 的 Windows 移植工程。按住热键说话，松手把文字粘到
 | 与 Codex 共同启停（2026-10-03） | ✅ **完成** —— 开 Codex 自动拉起（`SessionStart` 钩子，幂等），关 Codex 自动收摊（看门狗照 `anchor.json` 盯住**最外层**那个 Codex 进程，人一没就走 `--stop` 优雅路径）。**认人不认号**：句柄钉住内核里的进程对象，PID 被复用也不会认错；纸条读不到就退回常驻，绝不因为绑不上就不干活。`tools/supervise-selftest.py` 47 项把关。见 `docs/移植方案.md` 第 17 节 |
 | 口述落库（2026-10-03） | ✅ **完成** —— 两条触发：**双击 Fn** 给下一次口述打标记（HUD 提示；不经过 ASR，所以口令被听歪也不影响），或按 Fn 说「记一下：…」。松手后不粘贴，而是落成 Obsidian `00_Inbox/` 下的一篇捕获笔记（带 `type/inbox`）。判定与写盘是纯函数，可脱离窗口单测；目标目录写在 `settings.json`，仓库里不存机器路径。见 `docs/移植方案.md` 第 18 节 |
 | 插件换 Go 单 exe（2026-10-03） | ✅ **完成** —— 插件侧交付物从「plugin venv + 8 个 Python 文件」换成一个 `voicepill.exe`（8 个 MCP 工具 + 3 个钩子入口）；控制面新增一条语言无关的 NDJSON 通道，旧的 `multiprocessing` 通道原样保留。**实测（同一台机器，各 5 次取中位数）**：`initialize` 往返 Python 版 **2345 ms** → Go 版 **42 ms**（约 56×）；复跑办法 `tools/pluginexe-selftest.py --timing`，只报数不判失败。见 `docs/移植方案.md` 第 19–22 节 |
+| 提前拉起：登录哨兵（2026-10-05） | ✅ **代码与尺子完成 —— 真机端到端待重启一次 Codex 复量** —— `SessionStart` 钩子要等一次会话真的开始才打，实测桌面壳起来到钩子之间有 **55 秒**空档，这段时间按 Fn 没反应。补一个登录时起的常驻哨兵（Go 单 exe，2 秒扫一次进程表）：认出 Codex 就写锚点 + 拉看门狗，扫描 ≤2 秒 + 预热约 4 秒 ≈ **6 秒**，落进「10 秒（±5 秒）」。它不跟 `--stop` 对着干（锚点纸条挡在拉起之前）。`go test ./internal/sentinel/` 八个用例；`pluginexe-selftest` 从 61 项加到 80 项。见 `docs/移植方案.md` 第 23 节 |
 
 **M1 验收记录（2026-10-02）**
 
@@ -63,7 +64,7 @@ Voice Pill 的 Windows 移植工程。按住热键说话，松手把文字粘到
 | `src/capture.py` | 口述落库：判定口令、原子写 Inbox（纯函数，不碰 Windows API） |
 | `bin/` | 两个 ASR 引擎可执行文件放这里（`codex-asr.exe` / `freeasr.exe`），见 `bin/README.md` |
 | `bin/voicepill.exe` | 插件侧单文件可执行程序（8 个 MCP 工具 + 3 个钩子入口），由 `tools/build-plugin-exe.ps1` 产出 |
-| `go/voicepill/` | 插件侧 Go 单 exe 源码：一个二进制两种身份（MCP stdio 服务端 + 三个钩子入口） |
+| `go/voicepill/` | 插件侧 Go 单 exe 源码：一个二进制三种身份（MCP stdio 服务端 + 三个钩子入口 + 登录哨兵，哨兵见 `docs/移植方案.md` 第 23 节） |
 | `vendor/` | 两个引擎的上游源码副本（`codex-asr` / `FreeASR`），与上游 macOS 版里的那份一致 |
 | `tools/build-engines.sh` | 一键编两个引擎，四个坑都注释在脚本里 |
 | `tools/fn-probe.py` | Fn 键探针（Raw Input + 低级钩子双通道），带 `--keyup` / `--only` 开关 |
@@ -80,7 +81,7 @@ Voice Pill 的 Windows 移植工程。按住热键说话，松手把文字粘到
 | `tools/mock-asr.py` | 假引擎（实现 NDJSON 契约），用来单独验管道/解码/粘贴 |
 | `tools/local-asr.py` | **本地离线引擎**（sherpa-onnx + SenseVoice），实现同一份 NDJSON 契约，`local` 后端用它 |
 | `tools/build-plugin-exe.ps1` | 一键编 `bin/voicepill.exe`（`-trimpath -s -w`，二进制不带本机路径） |
-| `tools/pluginexe-selftest.py` | Go exe 端到端自测（61 项）：假引擎 + 真 exe 打八个工具与三个钩子，与冻结的 Python 契约对拍 |
+| `tools/pluginexe-selftest.py` | Go exe 端到端自测（80 项）：假引擎 + 真 exe 打八个工具与三个钩子，与冻结的 Python 契约对拍 |
 | `tools/install-selftest.py` | 安装自测（20 项）：**装没装上问 Codex 自己**（`codex plugin list`），问不到不许放行；`--check` 的退出码必须与 Codex 的说法一致 |
 | `src/console.py` | 控制台编码兜底（管道下打印 ✅ 会 GBK 崩）+ 应用日志 |
 | `src/single_instance.py` | 单实例互斥体：两个实例会各采一遍麦克风、各粘一遍 |
@@ -110,7 +111,7 @@ Voice Pill 的 Windows 移植工程。按住热键说话，松手把文字粘到
 ## 常驻运行
 
 **默认形态：随 Codex 起落。** 装好插件后，开 Codex 会自动把它拉起来、关 Codex 会自动收摊——
-不需要开机自启，登录后也不会留下空跑的后台进程。见 `docs/移植方案.md` 第 17 节。
+不需要开机自启**引擎**，登录后也不会留下空跑的引擎进程（哨兵那点常驻开销见本节的「提前拉起」）。见 `docs/移植方案.md` 第 17 节。
 
 只有「不开 Codex 也想按 Fn 说话」时，才需要装开机自启：
 
@@ -143,6 +144,21 @@ Voice Pill 的 Windows 移植工程。按住热键说话，松手把文字粘到
 0 = 不限）、`retention_minutes`（失败录音与转写日志保留几分钟，默认 3，0 = 不清理；
 成功那一次本来就当场删，不看这项）、
 `pending_ttl_minutes`（待取文字的保鲜期，默认 30，0 = 不过期）。
+
+**提前拉起：登录哨兵。** `SessionStart` 钩子要等一次会话真的开始才打——实测桌面壳起来到钩子之间有
+55 秒空档，这段时间引擎不在，按 Fn 没有反应。补一个登录时起的常驻小进程：
+
+```powershell
+voicepill.exe sentinel --install     # 登记登录自启（HKCU\...\Run，用户级，不用管理员）
+voicepill.exe sentinel --status       # 登记没有 / 哨兵在不在跑 / 锚点是谁
+voicepill.exe sentinel --once         # 只走一轮（排查用）
+voicepill.exe sentinel --stop         # 请哨兵退出（引擎不受影响，仍归看门狗管）
+voicepill.exe sentinel --uninstall    # 撤掉登录自启
+```
+
+它每 2 秒扫一次进程表，认出 Codex 就写锚点并拉起看门狗，之后盯到它退出、回到等待；扫到 + 预热 ≈ **6 秒**。
+代价是一个常驻小进程（实测工作集 9.9 MB；60 秒里只花 0.031 秒 CPU，约单核 0.05%），**引擎本体照旧不常驻**。它不跟
+`main.py --stop` 对着干：锚点纸条上已经写着这个 pid 就不动。见 `docs/移植方案.md` 第 23 节。
 
 ## 从别的进程用它（控制面）
 

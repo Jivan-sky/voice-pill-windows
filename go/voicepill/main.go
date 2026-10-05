@@ -1,7 +1,8 @@
 // voicepill 是 Voice Pill 的插件侧单文件可执行程序。
 //
 // 不带子命令时按 MCP stdio 服务端跑（八个工具）；带子命令时按 Codex 的命令行
-// 钩子跑（session-start / prompt-submit / stop，见 internal/hooks）。
+// 钩子跑（session-start / prompt-submit / stop，见 internal/hooks），或者按
+// 登录常驻的哨兵跑（sentinel，见 internal/sentinel）。
 package main
 
 import (
@@ -10,6 +11,7 @@ import (
 
 	"voicepill/internal/bridge"
 	"voicepill/internal/hooks"
+	"voicepill/internal/sentinel"
 	"voicepill/internal/tools"
 )
 
@@ -18,6 +20,8 @@ func main() {
 		switch os.Args[1] {
 		case hooks.KindSessionStart, hooks.KindPromptSubmit, hooks.KindStop:
 			os.Exit(hooks.Run(os.Args[1], os.Stdin, os.Stdout))
+		case sentinel.Kind:
+			os.Exit(sentinel.Run(os.Args[2:], os.Stdout))
 		default:
 			fmt.Fprintf(os.Stderr, "voicepill: 不认识的子命令 %q\n", os.Args[1])
 			os.Exit(2)
