@@ -277,8 +277,21 @@ func SupervisorAlive() bool {
 var spawnSupervisor = func(pythonw, supervise, root string) error {
 	cmd := exec.Command(pythonw, supervise)
 	cmd.Dir = root
+	// **只**用 CREATE_NO_WINDOW，不要 DETACHED_PROCESS。两者叠在一起会在这一跳之后
+	// 开出一个**看得见的** Windows Terminal 窗口：venv 里的 pythonw.exe 是个跳板
+	// （见 _force_stop 的注释），它自己还要再起一个真身；DETACHED 让跳板既没有控制台、
+	// 标准句柄也不继承，于是真身那一步只能**新建**一个控制台，而本机默认终端是 WT ——
+	// 建 console 就等于开一个黑窗。
+	//
+	// 2026-10-06 单变量实测（同一份源码、同一个跳板，只换 flags）：
+	//	CREATE_NO_WINDOW                  -> 窗口面：一个新窗口都没有
+	//	DETACHED_PROCESS|CREATE_NO_WINDOW -> 新出现一个 1007x526 的 CASCADIA(WT) 窗口
+	//	（两种都不重定向、都重定向到 devnull，各跑一遍，结论一样）
+	//
+	// 「离开父进程」这一点不受影响：这一跳的进程本来就有自己的控制台（只是没有窗口），
+	// 而父进程是 GUI 子系统的哨兵、根本没有控制台，它退出带不走这只看门狗。
 	cmd.SysProcAttr = &syscall.SysProcAttr{
-		CreationFlags: windows.DETACHED_PROCESS | windows.CREATE_NO_WINDOW,
+		CreationFlags: windows.CREATE_NO_WINDOW,
 	}
 	devnull, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
 	if err != nil {
@@ -298,7 +311,8 @@ var spawnSupervisor = func(pythonw, supervise, root string) error {
 // 与 Python hook_session_start._ensure_supervisor 一致：
 //   - 已经有人在守 → 什么都不做；
 //   - <root>\src\supervise.py 不存在 → 只记日志，不拉（自测靠这一条避开真身）；
-//   - 否则用 DETACHED_PROCESS + CREATE_NO_WINDOW 起 pythonw supervise.py。
+//   - 否则用 CREATE_NO_WINDOW 起 pythonw supervise.py（**不要** DETACHED_PROCESS：
+//     那一位会让这一跳之后冒出一个看得见的 WT 窗口，见 spawnSupervisor 的注释）。
 func EnsureSupervisor(root string, log Logger) bool {
 	owned, err := ProbeSupervisorMutex()
 	if err != nil {
